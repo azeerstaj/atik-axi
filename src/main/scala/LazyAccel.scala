@@ -44,7 +44,6 @@ class AccumulatorExampleModuleImp(outer: AccumulatorExample)(implicit p: Paramet
     regfile(addr) := wdata
   }
 
-
   // Got the data from L1, proceed.
   when (io.mem.resp.valid) {
     regfile(memRespTag) := io.mem.resp.bits.data
@@ -91,8 +90,9 @@ class AccumulatorExampleModuleImp(outer: AccumulatorExample)(implicit p: Paramet
   io.mem.req.bits.no_resp := false.B
 }
 
-class VEXPCmd extends Bundle {
+class VEXPCmd(XLen:Int) extends Bundle {
   val rd = UInt(5.W)
+  val rs1 = UInt(XLen.W)
 }
 
 class VEXPResp(XLen: Int) extends Bundle {
@@ -102,12 +102,13 @@ class VEXPResp(XLen: Int) extends Bundle {
 
 class VEXPCore(XLen: Int) extends Module {
   val io = IO(new Bundle {
-    val cmd = Flipped(DecoupledIO(new VEXPCmd()))
+    val cmd = Flipped(DecoupledIO(new VEXPCmd(XLen)))
     val resp = DecoupledIO(new VEXPResp(XLen))
     val busy = Output(Bool())
   })
   val res = RegInit(0.U(XLen.W))
   val res_rd = RegInit(0.U(5.W))
+  val rs1 = RegInit(0.U(XLen.W))
 
   // Initial Signals
   val s_idle :: s_proc :: s_finish :: Nil = Enum(3)
@@ -122,12 +123,30 @@ class VEXPCore(XLen: Int) extends Module {
     when(io.cmd.fire){
       state := s_proc
       res_rd := io.cmd.bits.rd
-      printf(p"[VEXP HW] CMD FIRE! Received rd: ${io.cmd.bits.rd}\n")
+      rs1 := io.cmd.bits.rs1
+
+      // Won't work if non-blocking.
+      printf(p"[VEXP HW] CMD FIRE! Received rd: ${res_rd} || rs1: ${rs1}\n")
     }
   }
 
   when(state === s_proc){
-    res := 30.U(XLen.W)
+
+    val bfloat16Inputs = rs1.asTypeOf(Vec(4, UInt(16.W)))
+    val out = Wire(Vec(4, UInt(16.W)))
+
+    for(i <- 0 until 4){
+      val sign = bfloat16Inputs(i)(15) // sign
+      val exp = bfloat16Inputs(i)(14, 7) // exp
+      val mantissa = bfloat16Inputs(i)(6, 0) // mantissa
+
+      // Operations
+      val nextExp = exp + 1.U // mul by 2
+
+      out(i) := Cat(sign, nextExp, mantissa)
+    }
+
+    res := out.asUInt
     state := s_finish
     printf(p"[VEXP HW] Processing complete. Moving to finish.\n")
   }
@@ -156,6 +175,7 @@ class VEXPImpl(outer: VEXP)(implicit p: Parameters) extends LazyRoCCModuleImp(ou
   val cmd = Queue(io.cmd)
 
   core.io.cmd.bits.rd := cmd.bits.inst.rd
+  core.io.cmd.bits.rs1 := cmd.bits.rs1
   core.io.cmd.valid := cmd.valid
   cmd.ready := core.io.cmd.ready
 
