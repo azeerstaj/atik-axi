@@ -24,7 +24,7 @@ all: $(ELFS) $(DUMPS)
 
 # Pattern rule: How to turn a src/%.c into a build/%.riscv
 $(BUILD_DIR)/%.riscv: $(SRC_DIR)/%.c | $(BUILD_DIR)
-	$(RISCV_CC) $(CFLAGS) -o $@ $<
+	$(RISCV_CC) $(CFLAGS) -o $@ $^ -lm
 
 # Pattern rule: How to turn a .riscv into a .dump
 $(BUILD_DIR)/%.dump: $(BUILD_DIR)/%.riscv

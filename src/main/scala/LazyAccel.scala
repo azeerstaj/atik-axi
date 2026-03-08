@@ -7,89 +7,14 @@ import org.chipsalliance.cde.config.{Parameters, Field, Config}
 import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.tile._
 import freechips.rocketchip.rocket._
-
-class AccumulatorExample(opcodes: OpcodeSet, val n: Int = 4)(implicit p: Parameters) extends LazyRoCC(opcodes) {
-  override lazy val module = new AccumulatorExampleModuleImp(this)
+import freechips.rocketchip.tilelink.{
+  TLNode, TLIdentityNode, TLClientNode, TLMasterParameters, TLMasterPortParameters
 }
 
-class AccumulatorExampleModuleImp(outer: AccumulatorExample)(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
-  with HasCoreParameters {
-  val regfile = Mem(outer.n, UInt(xLen.W))
-  val busy = RegInit(VecInit(Seq.fill(outer.n){false.B}))
 
-  val cmd = Queue(io.cmd)
-  val funct = cmd.bits.inst.funct
-
-  // This is bit slicing. [7:0] for example to get the first 8 bits.
-  val addr = cmd.bits.rs2(log2Up(outer.n)-1,0)
-  val doWrite = funct === 0.U
-  val doRead = funct === 1.U
-  val doLoad = funct === 2.U
-  val doAccum = funct === 3.U
-
-  // HellaCache responds to multiple requests in an out-of-order manner.
-  // Which register address the memory responded to.
-  val memRespTag = io.mem.resp.bits.tag(log2Up(outer.n)-1,0)
-
-  // datapath
-  // The command bundle contains the value of core's rs1, not the address/index.
-  // cmd.rs1 = core.regfile[instr.rs1]
-  val addend = cmd.bits.rs1
-  val accum = regfile(addr)
-  val wdata = Mux(doWrite, addend, accum + addend)
-
-  // .fire indicates that if IO is ready & valid.
-  when (cmd.fire && (doWrite || doAccum)) {
-    printf("VEXP: Command Received! RD register: %d\n", cmd.bits.inst.rd)
-    regfile(addr) := wdata
-  }
-
-  // Got the data from L1, proceed.
-  when (io.mem.resp.valid) {
-    regfile(memRespTag) := io.mem.resp.bits.data
-    busy(memRespTag) := false.B
-  }
-
-  // Asking for data from L1, wait.
-  when (io.mem.req.fire) {
-    busy(addr) := true.B
-  }
-
-  val doResp = cmd.bits.inst.xd
-  val stallReg = busy(addr) // Register is not ready, wait.
-  val stallLoad = doLoad && !io.mem.req.ready // L1 is fetching, wait.
-  val stallResp = doResp && !io.resp.ready // CPU is not ready, wait.
-
-  // Signal a ready to accept the next command
-  cmd.ready := !stallReg && !stallLoad && !stallResp
-
-  // PROC RESPONSE INTERFACE
-  io.resp.valid := cmd.valid && doResp && !stallReg && !stallLoad
-  // valid response if valid command, need a response, and no stalls
-  io.resp.bits.rd := cmd.bits.inst.rd
-  // Must respond with the appropriate tag or undefined behavior
-  io.resp.bits.data := accum
-  // Semantics is to always send out prior accumulator register value
-
-  io.busy := cmd.valid || busy.reduce(_||_)
-  // Be busy when have pending memory requests or committed possibility of pending requests
-  io.interrupt := false.B
-  // Set this true to trigger an interrupt on the processor (please refer to supervisor documentation)
-
-  // MEMORY REQUEST INTERFACE
-  io.mem.req.valid := cmd.valid && doLoad && !stallReg && !stallResp
-  io.mem.req.bits.addr := addend
-  io.mem.req.bits.tag := addr
-  io.mem.req.bits.cmd := M_XRD // perform a load (M_XWR for stores)
-  io.mem.req.bits.size := log2Ceil(8).U
-  io.mem.req.bits.signed := false.B
-  io.mem.req.bits.data := 0.U // we're not performing any stores...
-  io.mem.req.bits.phys := false.B
-  io.mem.req.bits.dprv := cmd.bits.status.dprv
-  io.mem.req.bits.dv := cmd.bits.status.dv
-  io.mem.req.bits.no_resp := false.B
-}
-
+// TODO : Since we are outputting a UQ32.32 we can
+// implement computation with better precision.
+// For now let's just output it as is,
 class BFloat16Exp extends Module {
   val io = IO(new Bundle {
     val in = Input(UInt(16.W))
@@ -171,111 +96,124 @@ class BFloat16Exp extends Module {
   io.out := Cat(0.U(1.W), final_exp, final_mantissa)
 }
 
-class VEXPCmd(XLen:Int) extends Bundle {
-  val rd = UInt(5.W)
-  val rs1 = UInt(XLen.W)
+
+class BFloat16ExpAccumulator(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) {
+  override lazy val module = new BFloat16ExpAccumulatorModuleImp(this)
+  override val atlNode = TLClientNode(Seq(TLMasterPortParameters.v1(Seq(TLMasterParameters.v1("BFloat16ExpAccumulatorRoCC")))))
 }
 
-class VEXPResp(XLen: Int) extends Bundle {
-  val data = UInt(XLen.W)
-  val rd = UInt(5.W)
-}
+class BFloat16ExpAccumulatorModuleImp(outer: BFloat16ExpAccumulator)(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
+  with HasCoreParameters
+  with HasL1CacheParameters {
 
-class VEXPCore(XLen: Int) extends Module {
-  val io = IO(new Bundle {
-    val cmd = Flipped(DecoupledIO(new VEXPCmd(XLen)))
-    val resp = DecoupledIO(new VEXPResp(XLen))
-    val busy = Output(Bool())
-  })
-  val res = RegInit(0.U(XLen.W))
-  val res_rd = RegInit(0.U(5.W))
-  val rs1 = RegInit(0.U(XLen.W))
+  val cacheParams = tileParams.dcache.get
 
-  // Initial Signals
-  val s_idle :: s_proc :: s_finish :: Nil = Enum(3)
+  // 64-bit cache bus / 16-bit BFloat16  = 4 elements per beat
+  // 256-bit cache bus / 16-bit BFloat16 = 16 elements per beat
+  val wordsPerBeat = cacheDataBits / 16
+
+  val addr = Reg(UInt(coreMaxAddrBits.W))
+  val elements_left = Reg(UInt(xLen.W))
+  val accumulator_fixedp = Reg(UInt(xLen.W))
+  val resp_rd = Reg(chiselTypeOf(io.resp.bits.rd))
+
+  val s_idle :: s_acq :: s_gnt :: s_resp :: Nil = Enum(4)
   val state = RegInit(s_idle)
-  io.cmd.ready := false.B
-  io.resp.valid := false.B
-  io.resp.bits.rd := 0.U
-  io.resp.bits.data := 0.U
 
-  when(state === s_idle){
-    io.cmd.ready := true.B
-    when(io.cmd.fire){
-      state := s_proc
-      res_rd := io.cmd.bits.rd
-      rs1 := io.cmd.bits.rs1
+  val (tl_out, edgesOut) = outer.atlNode.out(0)
 
-      // Won't work if non-blocking.
-      printf(p"[VEXP HW] CMD FIRE! Received rd: ${res_rd} || rs1: ${rs1}\n")
+  io.cmd.ready := (state === s_idle)
+  io.resp.valid := (state === s_resp)
+  io.resp.bits.rd := resp_rd
+  io.resp.bits.data := accumulator_fixedp
+
+  tl_out.a.valid := (state === s_acq)
+  tl_out.a.bits := edgesOut.Get(
+    fromSource = 0.U,
+    toAddress = addr,
+    lgSize = lgCacheBlockBytes.U)._2
+  tl_out.d.ready := (state === s_gnt)
+
+  when (io.cmd.fire) {
+    addr := io.cmd.bits.rs1
+    elements_left := io.cmd.bits.rs2
+    resp_rd := io.cmd.bits.inst.rd
+    accumulator_fixedp := 0.U
+    state := Mux(io.cmd.bits.rs2 === 0.U, s_resp, s_acq)
+    printf(p"[ACCUM EXP HW] CMD FIRE! Received rd: ${resp_rd} || addr: ${addr} ... \n")
+  }
+
+  when (tl_out.a.fire) { state := s_gnt }
+
+
+  // Tuple4 from edgesOut.count
+  val (first, last, done, beat_count) = edgesOut.count(tl_out.d)
+
+  when (tl_out.d.fire) {
+    // Slice beat into chunks
+    val bfloat_inputs = VecInit(Seq.tabulate(wordsPerBeat) { i =>
+      tl_out.d.bits.data(16 * (i + 1) - 1, 16 * i)
+    })
+
+    val exp_outputs = Wire(Vec(wordsPerBeat, UInt(16.W)))
+    val expModules = Seq.fill(wordsPerBeat)(Module(new BFloat16Exp))
+    for(i <- 0 until wordsPerBeat){
+      expModules(i).io.in := bfloat_inputs(i)
+      exp_outputs(i) := expModules(i).io.out
+    }
+
+    // Convert BFloat16 outputs to 64-bit Integers for hardware accumulation
+    val fixed_vals = exp_outputs.map { bf16 =>
+      val exp = bf16(14, 7)
+      val mantissa = bf16(6, 0)
+
+      val implied_bit = Mux(exp === 0.U, 0.U(1.W), 1.U(1.W))
+      // UQ1.7
+      val fraction = Cat(implied_bit, mantissa).pad(64)
+
+      // Ones digit must be shifted by (32 - 7 = 25) times.
+      // Exponent is biased, exp - 127 + 25 = exp - 102
+      val is_shift_left = exp > 102.U
+
+      // We will make sure that we shift
+      // maximum of 64 bits.
+      val left_shift_amt = exp - 102.U
+      val right_shift_amt = 102.U - exp
+
+      Mux(exp === 0.U, 0.U(64.W),
+        Mux(is_shift_left, fraction << left_shift_amt(5, 0), fraction >> right_shift_amt(5, 0))
+      )
+    }
+
+    // Mask out invalid elements
+    val masked_vals = fixed_vals.zipWithIndex.map { case (int_val, i) =>
+      Mux(i.U < elements_left, int_val, 0.U(64.W))
+    }
+
+    val beat_sum = masked_vals.reduce(_ + _)
+    accumulator_fixedp := accumulator_fixedp + beat_sum
+    addr := addr + (wordsPerBeat * 2).U // Advance by 8 bytes (4 elements * 2 bytes)
+
+    val elements_processed = Mux(elements_left > wordsPerBeat.U, wordsPerBeat.U, elements_left)
+    val next_elements = elements_left - elements_processed
+    elements_left := next_elements
+    printf(p"[ACCUM EXP HW] Got the data!")
+
+    when (done) {
+      state := Mux(next_elements === 0.U, s_resp, s_acq)
     }
   }
 
-  when(state === s_proc){
-
-
-    val bfloat16Inputs = rs1.asTypeOf(Vec(4, UInt(16.W)))
-    val out = Wire(Vec(4, UInt(16.W)))
-    val vexpBfloat16 = Seq.fill(4)(Module(new BFloat16Exp))
-
-    for(i <- 0 until 4){
-      vexpBfloat16(i).io.in := bfloat16Inputs(i)
-      out(i) := vexpBfloat16(i).io.out
-      printf(p"[VEXP HW] BFloat16 Input  : ${Hexadecimal(bfloat16Inputs(i))}.\n")
-      printf(p"[VEXP HW] BFloat16 Output : ${Hexadecimal(out(i))}.\n\n")
-    }
-
-    res := out.asUInt
-    state := s_finish
-    printf(p"[VEXP HW] Processing complete. Moving to finish.\n")
+  when (io.resp.fire) {
+    state := s_idle
+    printf(p"[ACCUM EXP HW] Back to idle.")
   }
-
-  when(state === s_finish){
-    io.resp.bits.data := res
-    io.resp.bits.rd := res_rd
-    io.resp.valid := true.B
-    printf(p"[VEXP HW] Waiting for CPU to accept response... io.resp.ready is ${io.resp.ready}\n")
-    when(io.resp.fire){
-      state := s_idle
-      printf(p"[VEXP HW] RESP FIRE! Sent data 30 back to CPU.\n")
-    }
-  }
-
-  io.busy := (state =/= s_idle) || io.cmd.valid
-}
-
-class VEXP(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) {
-  override lazy val module = new VEXPImpl(this)
-}
-
-class VEXPImpl(outer: VEXP)(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
-  with HasCoreParameters {
-  val core = Module(new VEXPCore(xLen))
-  val cmd = Queue(io.cmd)
-
-  core.io.cmd.bits.rd := cmd.bits.inst.rd
-  core.io.cmd.bits.rs1 := cmd.bits.rs1
-  core.io.cmd.valid := cmd.valid
-  cmd.ready := core.io.cmd.ready
-
-  io.resp.bits.data := core.io.resp.bits.data
-  io.resp.bits.rd := core.io.resp.bits.rd
-  io.resp.valid := core.io.resp.valid
-  core.io.resp.ready := io.resp.ready
-
-  io.busy := core.io.busy
-  io.interrupt := false.B
-  io.mem.req.valid := false.B
 }
 
 class WithToyRoCC extends Config((site, here, up) => {
   case BuildRoCC => List(
     (p: Parameters) => {
-      val accumulator = LazyModule(new AccumulatorExample(OpcodeSet.custom0, n = 4)(p))
-      accumulator
-    },
-    (p: Parameters) => {
-      val vexp = LazyModule(new VEXP(OpcodeSet.custom1)(p))
-      vexp
+      val expAccum = LazyModule(new BFloat16ExpAccumulator(OpcodeSet.custom0)(p))
+      expAccum
     })
 })
