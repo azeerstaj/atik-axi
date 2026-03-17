@@ -3,6 +3,7 @@ package toyrocc
 import chisel3._
 import chisel3.util._
 import hardfloat._
+import scala.math.BigDecimal.RoundingMode
 
 import org.chipsalliance.cde.config.{Parameters, Field, Config}
 import freechips.rocketchip.diplomacy._
@@ -232,136 +233,31 @@ class BFloat16Exp extends Module {
   io.out := Mux(is_neg_inf, 0.U, Mux(is_inf_nan, out_saturated, out_normal))
 }
 
-
-class BFloat16ExpAccumulator(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) {
-  override lazy val module = new BFloat16ExpAccumulatorModuleImp(this)
-  override val atlNode = TLClientNode(Seq(TLMasterPortParameters.v1(Seq(TLMasterParameters.v1("BFloat16ExpAccumulatorRoCC")))))
-}
-
-class BFloat16ExpAccumulatorModuleImp(outer: BFloat16ExpAccumulator)(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
-  with HasCoreParameters
-  with HasL1CacheParameters {
-
-  val cacheParams = tileParams.dcache.get
-
-  // 64-bit cache bus / 16-bit BFloat16  = 4 elements per beat
-  // 256-bit cache bus / 16-bit BFloat16 = 16 elements per beat
-  val wordsPerBeat = cacheDataBits / 16
-
-  val addr = Reg(UInt(coreMaxAddrBits.W))
-  val elements_left = Reg(UInt(xLen.W))
-  val accumulator_fixedp = Reg(UInt(xLen.W))
-  val resp_rd = Reg(chiselTypeOf(io.resp.bits.rd))
-
-  val s_idle :: s_acq :: s_gnt :: s_resp :: Nil = Enum(4)
-  val state = RegInit(s_idle)
-
-  val (tl_out, edgesOut) = outer.atlNode.out(0)
-
-  io.cmd.ready := (state === s_idle)
-  io.resp.valid := (state === s_resp)
-  io.resp.bits.rd := resp_rd
-  io.resp.bits.data := accumulator_fixedp
-
-  tl_out.a.valid := (state === s_acq)
-
-  // The size of data we are expecting
-  val bytesPerBeat = cacheDataBits / 8
-  val bytesPerBeatU = bytesPerBeat.U
-
-  tl_out.a.bits := edgesOut.Get(
-    fromSource = 0.U,
-    toAddress = addr,
-    lgSize = log2Ceil(bytesPerBeat).U)._2
-  tl_out.d.ready := (state === s_gnt)
-
-  when (io.cmd.fire) {
-    addr := io.cmd.bits.rs1
-    elements_left := io.cmd.bits.rs2
-    resp_rd := io.cmd.bits.inst.rd
-    accumulator_fixedp := 0.U
-    state := Mux(io.cmd.bits.rs2 === 0.U, s_resp, s_acq)
-    printf(p"[ACCUM EXP HW] CMD FIRE! Received rd: ${resp_rd} || addr: ${addr} ... \n")
-  }
-
-  when (tl_out.a.fire) { state := s_gnt }
-
-
-  // Tuple4 from edgesOut.count
-  val (first, last, done, beat_count) = edgesOut.count(tl_out.d)
-
-  when (tl_out.d.fire) {
-    // Slice beat into chunks
-    val bfloat_inputs = VecInit(Seq.tabulate(wordsPerBeat) { i =>
-      tl_out.d.bits.data(16 * (i + 1) - 1, 16 * i)
-    })
-
-    val exp_outputs = Wire(Vec(wordsPerBeat, UInt(16.W)))
-    val expModules = Seq.fill(wordsPerBeat)(Module(new BFloat16Exp))
-    for(i <- 0 until wordsPerBeat){
-      expModules(i).io.in := bfloat_inputs(i)
-      exp_outputs(i) := expModules(i).io.out
-    }
-
-    // Convert BFloat16 outputs to 64-bit Integers for hardware accumulation
-    val fixed_vals = exp_outputs.map { bf16 =>
-      val exp = bf16(14, 7)
-      val mantissa = bf16(6, 0)
-
-      val implied_bit = Mux(exp === 0.U, 0.U(1.W), 1.U(1.W))
-      // UQ1.7
-      val fraction = Cat(implied_bit, mantissa).pad(64)
-
-      // Ones digit must be shifted by (32 - 7 = 25) times.
-      // Exponent is biased, exp - 127 + 25 = exp - 102
-      val is_shift_left = exp > 102.U
-
-      // We will make sure that we shift
-      // maximum of 64 bits.
-      val left_shift_amt = exp - 102.U
-      val right_shift_amt = 102.U - exp
-
-      Mux(exp === 0.U, 0.U(64.W),
-        Mux(is_shift_left, fraction << left_shift_amt(5, 0), fraction >> right_shift_amt(5, 0))
-      )
-    }
-
-    // Mask out invalid elements
-    val masked_vals = fixed_vals.zipWithIndex.map { case (int_val, i) =>
-      Mux(i.U < elements_left, int_val, 0.U(64.W))
-    }
-
-    val beat_sum = masked_vals.reduce(_ + _)
-    accumulator_fixedp := accumulator_fixedp + beat_sum
-    addr := addr + bytesPerBeatU
-
-    val elements_processed = Mux(elements_left > wordsPerBeat.U, wordsPerBeat.U, elements_left)
-    val next_elements = elements_left - elements_processed
-    elements_left := next_elements
-    printf(p"[ACCUM EXP HW] Got the data!")
-
-    when (done) {
-      state := Mux(next_elements === 0.U, s_resp, s_acq)
-    }
-  }
-
-  when (io.resp.fire) {
-    state := s_idle
-    printf(p"[ACCUM EXP HW] Back to idle.")
-  }
-}
-
-class OnlineSoftmaxImpl(intPrecision:Int = 12, fracPrecision: Int = 20, outer: OnlineSoftmax)(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
+class OnlineSoftmaxImpl(
+  intPrecision:Int = 12,
+  fracPrecision: Int = 20,
+  lutEntries: Int = 256,
+  lutBits: Int = 64,
+  outer: OnlineSoftmax
+)(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
   with HasCoreParameters
   with HasL1CacheParameters {
 
   // required for tilelink
   val cacheParams = tileParams.dcache.get
-  // n_elements we get per request from tilelink
+  // n_elements we get per request from tilelink (in)
   val wordsPerBeat = cacheDataBits / 16
+  // n_elements we write per request (UQ32.32 => 64-bit per element)
+  val outWordsPerBeat = cacheDataBits / 64
+  val outBeatsPerInBeat = wordsPerBeat / outWordsPerBeat
   // -inf
   val minBf16 = "hFF80".U(16.W)
   val bitWidth = intPrecision + fracPrecision
+  val lutIndexBits = log2Ceil(lutEntries)
+
+  require(isPow2(lutEntries) && lutEntries >= 2, "lutEntries must be a power of 2 and >= 2")
+  require(wordsPerBeat % outWordsPerBeat == 0, "output beat ratio must be integral")
+  require(fracPrecision >= lutIndexBits - 1, "fracPrecision too small for LUT index bits")
 
   // States
   // s_idle -> Fetch the next instruction.
@@ -370,7 +266,7 @@ class OnlineSoftmaxImpl(intPrecision:Int = 12, fracPrecision: Int = 20, outer: O
   // s_exp -> Exponentiate the thing
   // s_resp -> Update the accumulation register, increase the total processed elements,
   //           if we consumed all the data finish.
-  val s_idle :: s_acq :: s_gnt :: s_findmax :: s_exp :: s_reduce :: s_resp :: Nil = Enum(7)
+  val s_idle :: s_acq :: s_gnt :: s_findmax :: s_exp :: s_reduce :: s_put :: s_put_ack :: s_resp :: Nil = Enum(9)
   val state = RegInit(s_idle)
 
   // Operational Registers
@@ -381,7 +277,6 @@ class OnlineSoftmaxImpl(intPrecision:Int = 12, fracPrecision: Int = 20, outer: O
   val maxCurr = RegInit(minBf16) // currMax = max(maxVec(input), prevMax)
                                  // Updated when finding the maximum
   val maxPrev = RegInit(minBf16) // Updated when reducing
-
 
   // Vec Operation Modules
   val vecSubs = Seq.fill(wordsPerBeat)(Module(new BFloat16Sub))
@@ -398,12 +293,27 @@ class OnlineSoftmaxImpl(intPrecision:Int = 12, fracPrecision: Int = 20, outer: O
     new BFloat16ToFixed(intBits = intPrecision, fracBits = fracPrecision)
   )
 
+  // Reciprocal LUT: index into [1.0, 2.0) range
+  val lut = VecInit(Seq.tabulate(lutEntries) { i =>
+    val mant = BigDecimal(1) + (BigDecimal(i) + BigDecimal(0.5)) / BigDecimal(lutEntries)
+    val recip = BigDecimal(1) / mant
+    val scaled = (recip * BigDecimal(2).pow(lutBits - 1)).setScale(0, RoundingMode.HALF_UP).toBigInt
+    scaled.U(lutBits.W)
+  })
+
   // Input Command Registers
-  val arraySize = RegInit(0.U(xLen.W)) // rs2
-  val addr = RegInit(0.U(xLen.W))      // rs1
+  val arraySize = RegInit(0.U(xLen.W)) // rs2, init once
+  val inBase = RegInit(0.U(xLen.W))    // init once @ phase1
+  val inAddr = RegInit(0.U(xLen.W))    // init & increment @ phase1 & phase2
+  val outAddr = RegInit(0.U(xLen.W))   // init & increment @ phase2
   val resp_rd = RegInit(0.U(5.W))      // rd
+  val invSum = RegInit(0.U(bitWidth.W))
+  val doWrite = RegInit(false.B)
+  val writeBeatIdx = RegInit(0.U(log2Ceil(outBeatsPerInBeat).W))
+  val outBuf = Reg(Vec(wordsPerBeat, UInt(bitWidth.W)))
 
   val bytesPerBeat = (cacheDataBits / 8).U // typically 8-bytes
+  val outBeatBytes = (outWordsPerBeat * 8).U
   val procElements = RegInit(0.U(xLen.W)) // starts from 0 ends at arraySize
   val latchedData  = RegInit(0.U(cacheDataBits.W)) // updated at cmd.fire
 
@@ -437,14 +347,51 @@ class OnlineSoftmaxImpl(intPrecision:Int = 12, fracPrecision: Int = 20, outer: O
   val prodAccumFull = accum * maxFixedPClamped
   val prodAccum = (prodAccumFull >> fracPrecision)(bitWidth - 1, 0)
 
+  val subBase = Mux(doWrite, maxPrev, globalMax.io.out)
   for(i <- 0 until wordsPerBeat){
     vecSubs(i).io.in_1 := bfloat_inputs(i)
-    vecSubs(i).io.in_2 := globalMax.io.out
+    vecSubs(i).io.in_2 := subBase
     vecExps(i).io.in := vecSubs(i).io.out
     vecFixedPs(i).io.in := vecExps(i).io.out
     vecFixedWires(i) := vecFixedPs(i).io.out
   }
   val vecSum = vecFixedWires.reduceTree(_ + _)
+
+  // Reciprocal estimate for normalization (UQ1.(lutBits-1) -> UQint.frac)
+  val sumNonZero = accum.orR
+  val msb = (bitWidth - 1).U - PriorityEncoder(Reverse(accum))
+  val shift = Mux(sumNonZero, msb - fracPrecision.U, 0.U)
+  val mant = accum >> shift
+  val lutIndex = mant(fracPrecision, fracPrecision - lutIndexBits + 1)
+  val lutVal = lut(lutIndex)
+  val scaleDown = lutBits - 1 - fracPrecision
+  val lutScaled = if (scaleDown >= 0) (lutVal >> scaleDown) else (lutVal << (-scaleDown))
+  val invRaw = lutScaled >> shift
+  val invSumCalc = Mux(sumNonZero, invRaw.pad(bitWidth)(bitWidth - 1, 0), 0.U)
+
+  val remainingElems = Mux(arraySize >= procElements, arraySize - procElements, 0.U)
+  val validPerBeat = Wire(Vec(outBeatsPerInBeat, UInt(log2Ceil(outWordsPerBeat + 1).W)))
+  for (b <- 0 until outBeatsPerInBeat) {
+    val base = (b * outWordsPerBeat).U
+    val rem = Mux(remainingElems > base, remainingElems - base, 0.U)
+    validPerBeat(b) := Mux(rem > outWordsPerBeat.U, outWordsPerBeat.U, rem)
+  }
+
+  val outBeatVec = VecInit(Seq.tabulate(outBeatsPerInBeat) { b =>
+    VecInit(Seq.tabulate(outWordsPerBeat) { j =>
+      outBuf(b * outWordsPerBeat + j)
+    }).asUInt
+  })
+
+  val outMaskVec = VecInit(Seq.tabulate(outBeatsPerInBeat) { b =>
+    val valid = validPerBeat(b)
+    VecInit(Seq.tabulate(outWordsPerBeat) { j =>
+      Fill(8, j.U < valid)
+    }).asUInt
+  })
+
+  val outBeat = outBeatVec(writeBeatIdx)
+  val outMask = outMaskVec(writeBeatIdx)
 
   // TileLink Stuff
   val (tl_out, edgesOut) = outer.atlNode.out(0)
@@ -454,48 +401,86 @@ class OnlineSoftmaxImpl(intPrecision:Int = 12, fracPrecision: Int = 20, outer: O
   io.resp.bits.data := accum
   io.resp.bits.rd := resp_rd
 
-  tl_out.a.valid := (state === s_acq)
-  tl_out.a.bits := edgesOut.Get(
+  val doRead = (state === s_acq)
+  val doPut = (state === s_put)
+  val getBits = edgesOut.Get(
     fromSource = 0.U,
-    toAddress = addr,
+    toAddress = inAddr,
     lgSize = log2Ceil(cacheDataBits / 8).U
   )._2
-  tl_out.d.ready := (state === s_gnt)
+  val putBits = edgesOut.Put(
+    fromSource = 0.U,
+    toAddress = outAddr,
+    lgSize = log2Ceil(cacheDataBits / 8).U,
+    data = outBeat,
+    mask = outMask
+  )._2
+
+  tl_out.a.valid := doRead || doPut
+  tl_out.a.bits := Mux(doPut, putBits, getBits)
+  tl_out.d.ready := (state === s_gnt) || (state === s_put_ack)
 
   when(io.cmd.fire){
-    arraySize := io.cmd.bits.rs2
-    addr := io.cmd.bits.rs1
     resp_rd := io.cmd.bits.inst.rd
+    val funct = io.cmd.bits.inst.funct
 
-    accum := 0.U
-    procElements := 0.U
-    maxPrev := minBf16
-
-    state := s_acq
+    when(funct === 0.U) {
+      doWrite := false.B
+      arraySize := io.cmd.bits.rs2
+      inBase := io.cmd.bits.rs1
+      inAddr := io.cmd.bits.rs1
+      procElements := 0.U
+      accum := 0.U
+      maxPrev := minBf16
+      state := s_acq
+    }.otherwise {
+      doWrite := true.B
+      outAddr := io.cmd.bits.rs1
+      inAddr := inBase
+      procElements := 0.U
+      writeBeatIdx := 0.U
+      invSum := invSumCalc
+      state := s_acq
+    }
   }
 
-  when(tl_out.a.fire){
-    addr := addr + bytesPerBeat
+  when(state === s_acq && tl_out.a.fire){
     state := s_gnt
   }
 
-  when(tl_out.d.fire){
-    latchedData := tl_out.d.bits.data
-    state := s_findmax
+  when(state === s_put && tl_out.a.fire){
+    state := s_put_ack
   }
 
-  when(state === s_findmax){
+  when(state === s_gnt && tl_out.d.fire){
+    latchedData := tl_out.d.bits.data
+    state := Mux(doWrite, s_exp, s_findmax)
+  }
+
+  when(state === s_findmax && !doWrite){
     maxCurr := globalMax.io.out
     state := s_exp
   }
 
   when(state === s_exp){
-    state := s_reduce
+    when(doWrite) {
+      for (i <- 0 until wordsPerBeat) {
+        val normFull = vecFixedWires(i) * invSum
+        val norm = (normFull >> fracPrecision)(bitWidth - 1, 0)
+        val is_valid = procElements + i.U < arraySize
+        outBuf(i) := Mux(is_valid, norm, 0.U)
+      }
+      writeBeatIdx := 0.U
+      state := s_put
+    }.otherwise {
+      state := s_reduce
+    }
   }
 
-  when(state === s_reduce){
+  when(state === s_reduce && !doWrite){
     maxPrev := maxCurr
     accum := vecSum + prodAccum
+    inAddr := inAddr + bytesPerBeat
     val nextProcElements = procElements + wordsPerBeat.U
     procElements := nextProcElements
 
@@ -506,13 +491,46 @@ class OnlineSoftmaxImpl(intPrecision:Int = 12, fracPrecision: Int = 20, outer: O
     }
   }
 
+  when(state === s_put_ack && tl_out.d.fire){
+    outAddr := outAddr + outBeatBytes
+
+    val lastBeat = writeBeatIdx === (outBeatsPerInBeat - 1).U
+    when(lastBeat){
+      inAddr := inAddr + bytesPerBeat
+      val nextProcElements = procElements + wordsPerBeat.U
+      procElements := nextProcElements
+      writeBeatIdx := 0.U
+
+      when(nextProcElements >= arraySize){
+        state := s_resp
+      }.otherwise{
+        state := s_acq
+      }
+    }.otherwise{
+      writeBeatIdx := writeBeatIdx + 1.U
+      state := s_put
+    }
+  }
+
   when(io.resp.fire){
     state := s_idle
   }
 }
 
-class OnlineSoftmax(intPrecision:Int = 12, fracPrecision:Int = 20, opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) {
-  override lazy val module = new OnlineSoftmaxImpl(intPrecision = intPrecision, fracPrecision = fracPrecision, this)
+class OnlineSoftmax(
+  intPrecision:Int = 12,
+  fracPrecision:Int = 20,
+  lutEntries: Int = 256,
+  lutBits: Int = 64,
+  opcodes: OpcodeSet
+)(implicit p: Parameters) extends LazyRoCC(opcodes) {
+  override lazy val module = new OnlineSoftmaxImpl(
+    intPrecision = intPrecision,
+    fracPrecision = fracPrecision,
+    lutEntries = lutEntries,
+    lutBits = lutBits,
+    this
+  )
   override val atlNode = TLClientNode(Seq(TLMasterPortParameters.v1(Seq(TLMasterParameters.v1("OnlineSoftmaxRoCC")))))
 }
 

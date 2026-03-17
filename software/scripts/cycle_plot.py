@@ -13,8 +13,9 @@ def main():
     hw_cycles = []
     errors = []
 
-    sw_out = 0.0
-    hw_out = 0.0
+    sw_metric = None
+    hw_metric = None
+    pending_error = None
 
     # Parse the log file
     with open(log_file, 'r') as f:
@@ -22,18 +23,32 @@ def main():
             line = line.strip()
             
             if line.startswith("-> Software Accumulated Output:"):
-                sw_out = float(line.split(":")[1].strip())
-            
+                sw_metric = float(line.split(":")[1].strip())
+
             elif line.startswith("-> Hardware Accumulated Output:"):
-                hw_out = float(line.split(":")[1].strip())
-                # Calculate absolute error
-                errors.append(abs(sw_out - hw_out))
+                hw_metric = float(line.split(":")[1].strip())
+
+            elif line.startswith("-> Software Softmax Denominator:"):
+                sw_metric = float(line.split(":")[1].strip())
+
+            elif line.startswith("-> Hardware Softmax Denominator:"):
+                hw_metric = float(line.split(":")[1].strip())
+
+            if sw_metric is not None and hw_metric is not None:
+                pending_error = abs(sw_metric - hw_metric)
+                sw_metric = None
+                hw_metric = None
                 
             elif line.startswith("CSV_DATA,"):
                 parts = line.split(',')
                 sizes.append(int(parts[1].strip()))
                 sw_cycles.append(int(parts[2].strip()))
                 hw_cycles.append(int(parts[3].strip()))
+                if pending_error is None:
+                    errors.append(float('nan'))
+                else:
+                    errors.append(pending_error)
+                    pending_error = None
 
     if not sizes:
         print("No valid data found to plot. Check your log file format.")
@@ -58,19 +73,22 @@ def main():
     print("Saved performance plot as 'cycles_comparison.png'")
 
     # --- Figure 2: Error (Difference vs Elements) ---
-    plt.figure(figsize=(8, 6))
-    plt.plot(sizes, errors, marker='^', linewidth=2, color='darkorange', label='Absolute Error |SW - HW|')
-    
-    plt.title("Hardware Approximation Error vs. Array Size")
-    plt.xlabel("Array Size (n_elements)")
-    plt.ylabel("Absolute Error")
-    
-    plt.xticks(sizes)
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig('error_scaling.png', dpi=300)
-    print("Saved error plot as 'error_scaling.png'")
+    if any(not (val != val) for val in errors):
+        plt.figure(figsize=(8, 6))
+        plt.plot(sizes, errors, marker='^', linewidth=2, color='darkorange', label='Absolute Error |SW - HW|')
+        
+        plt.title("Hardware Approximation Error vs. Array Size")
+        plt.xlabel("Array Size (n_elements)")
+        plt.ylabel("Absolute Error")
+        
+        plt.xticks(sizes)
+        plt.grid(True, linestyle="--", alpha=0.6)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig('error_scaling.png', dpi=300)
+        print("Saved error plot as 'error_scaling.png'")
+    else:
+        print("No error metrics found in log; skipping 'error_scaling.png'.")
 
     # --- Figure 3: Hardware Performance (HW Cycles vs Elements) ---
     plt.clf()  # Clear the previous figure
