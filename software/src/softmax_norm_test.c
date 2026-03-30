@@ -137,7 +137,7 @@ int main(void) {
             out_array[i] = 0;
         }
 
-        print_array_samples(float_array, current_size, "Input Float Array");
+        // print_array_samples(float_array, current_size, "Input Float Array");
 
         uint64_t sw_start = read_cycles();
         float max_val = -INFINITY;
@@ -156,9 +156,9 @@ int main(void) {
         }
         uint64_t sw_end = read_cycles();
 
-        print_float("Software max: ", max_val);
-        print_float("Software denom: ", (float)denom);
-        print_array_samples(sw_softmax, current_size, "Software Softmax");
+        // print_float("Software max: ", max_val);
+        // print_float("Software denom: ", (float)denom);
+        // print_array_samples(sw_softmax, current_size, "Software Softmax");
 
         uint64_t hw_start = read_cycles();
         uint64_t sum_raw = rocc_pass1(bf16_array, current_size);
@@ -167,15 +167,15 @@ int main(void) {
         uint64_t sum_raw2 = rocc_pass2(out_array);
         uint64_t hw_end = read_cycles();
 
-        printf("\nHW sum (pass1):\n");
-        print_uq32_32("  ", sum_raw);
-        printf("HW sum (pass2 response):\n");
-        print_uq32_32("  ", sum_raw2);
+        // printf("\nHW sum (pass1):\n");
+        // print_uq32_32("  ", sum_raw);
+        // printf("HW sum (pass2 response):\n");
+        // print_uq32_32("  ", sum_raw2);
 
         for (uint64_t i = 0; i < current_size; i++) {
             hw_softmax[i] = uq32_32_to_float(out_array[i]);
         }
-        print_array_samples(hw_softmax, current_size, "Hardware Softmax");
+        // print_array_samples(hw_softmax, current_size, "Hardware Softmax");
 
         // Pairwise check
         for (uint64_t i = 0; i < current_size; i++) {
@@ -183,8 +183,8 @@ int main(void) {
             if (diff < 0) diff = -diff;
             if (diff > 0.01f) {
                 printf("\n[!] MISMATCH at index %lu (size %lu)\n", (unsigned long)i, (unsigned long)current_size);
-                print_float("    SW: ", sw_softmax[i]);
-                print_float("    HW: ", hw_softmax[i]);
+                // print_float("    SW: ", sw_softmax[i]);
+                // print_float("    HW: ", hw_softmax[i]);
                 test_failed = 1;
                 break;
             }
