@@ -10,6 +10,11 @@ This repository includes the following:
 * `workloads/linux/`: FireMarshal Linux workload configs and host-init.
 * `overlay/`: files injected into Linux rootfs images.
 
+### Bare Matmul Workloads
+* `workloads/bare/matmul-simple.json`: boots `systolic_matmul_simple.riscv`.
+* `workloads/bare/matmul-random.json`: boots `systolic_matmul_random.riscv`.
+* `workloads/bare/matmul-benchmark.json`: boots `systolic_matmul_benchmark.riscv`.
+
 ### Expected Verilator Output:
 ```sh
 # This is a real RTL simulation.

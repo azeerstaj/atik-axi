@@ -1,5 +1,5 @@
 {
-  "name" : "matmul-smoke-bare",
+  "name" : "matmul-simple-bare",
   "workdir" : "../..",
   "base" : "bare-base.json",
   "host-init" : "workloads/bare/host-init.sh",
