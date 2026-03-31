@@ -3,6 +3,6 @@
   "base" : "br-base.json",
   "workdir" : ".",
   "overlay" : "overlay",
-  "host-init" : "host-init.sh",
-  "command" : "echo !!selamlar knk!! && sh /root/run-softmax-smoke.sh && echo aleykum selam knk?"
+  "host-init" : "host-init-linux.sh",
+  "command" : "echo !!selamlar knk!!"
 }
