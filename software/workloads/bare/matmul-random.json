@@ -1,7 +1,7 @@
 {
-  "name" : "matmul-random-bare",
+  "name" : "matmul-random-output-stationary-bare",
   "workdir" : "../..",
   "base" : "bare-base.json",
   "host-init" : "workloads/bare/host-init.sh",
-  "bin" : "build/systolic_matmul_random.riscv"
+  "bin" : "build/systolic_matmul_random_output_stationary.riscv"
 }

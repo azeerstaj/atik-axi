@@ -1,8 +1,8 @@
 {
-  "name" : "test-smoke3",
+  "name" : "test-smoke4",
   "base" : "br-base.json",
   "workdir" : "../..",
   "overlay" : "overlay",
   "host-init" : "workloads/linux/host-init.sh",
-  "command" : "/root/systolic_matmul_simple_output_stationary.riscv"
+  "command" : "/root/systolic_matmul_simple_weight_stationary.riscv"
 }

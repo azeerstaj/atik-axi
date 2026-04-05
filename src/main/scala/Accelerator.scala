@@ -16,10 +16,10 @@ class SoftmaxAccel extends Config((site, here, up) => {
     })
 })
 
-class MatmulAccel2x2 extends Config((site, here, up) => {
+class MatmulAccel2x2OS extends Config((site, here, up) => {
   case BuildRoCC => List(
   (p: Parameters) => {
-    val sa = LazyModule(new SystolicArrayRoCC(
+    val sa = LazyModule(new SystolicArrayOSRoCC(
       precision = 16,
       nRows = 2,
       nCols = 2,
@@ -32,10 +32,10 @@ class MatmulAccel2x2 extends Config((site, here, up) => {
 })
 
 
-class MatmulAccel4x4 extends Config((site, here, up) => {
+class MatmulAccel4x4OS extends Config((site, here, up) => {
   case BuildRoCC => List(
     (p: Parameters) => {
-      val sa = LazyModule(new SystolicArrayRoCC(
+      val sa = LazyModule(new SystolicArrayOSRoCC(
         precision = 16,
         nRows = 4,
         nCols = 4,
@@ -46,6 +46,39 @@ class MatmulAccel4x4 extends Config((site, here, up) => {
     }
   )
 })
+
+class MatmulAccel2x2WS extends Config((site, here, up) => {
+  case BuildRoCC => List(
+    (p: Parameters) => {
+      val sa = LazyModule(new SystolicArrayWSRoCC(
+        precision = 16,
+        nRows = 2,
+        nCols = 2,
+        maxK = 256,
+        opcodes = OpcodeSet.custom1,
+      )(p))
+      sa
+    }
+  )
+})
+
+class MatmulAccel4x4WS extends Config((site, here, up) => {
+  case BuildRoCC => List(
+    (p: Parameters) => {
+      val sa = LazyModule(new SystolicArrayWSRoCC(
+        precision = 16,
+        nRows = 4,
+        nCols = 4,
+        maxK = 256,
+        opcodes = OpcodeSet.custom1,
+      )(p))
+      sa
+    }
+  )
+})
+
+class MatmulAccel2x2 extends MatmulAccel2x2OS
+class MatmulAccel4x4 extends MatmulAccel4x4OS
 
 
 class WithToyRoCC extends Config((site, here, up) => {

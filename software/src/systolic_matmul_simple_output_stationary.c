@@ -89,7 +89,7 @@ int main(void) {
   }
   uint64_t hw_cycles = read_cycles() - hw_start;
 
-  printf("=== Systolic GEMM Simple Test ===\n");
+  printf("=== Systolic GEMM Simple Test (Output-Stationary) ===\n");
   printf("Dims: (%d x %d) * (%d x %d) -> (%d x %d)\n", SA_ROWS, K, K, SA_COLS, SA_ROWS, SA_COLS);
   printf("Config rc: %lu, Run rc: %lu\n", (unsigned long)cfg_rc, (unsigned long)run_rc);
   printf("SW cycles: %lu, HW end-to-end cycles: %lu\n",

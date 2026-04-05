@@ -1,0 +1,48 @@
+v1
+=== Systolic GEMM Simple Test (Weight-Stationary) ===                                                                                                                                         
+Dims: (4 x 140) * (140 x 4) -> (4 x 4)                                                                                                                                                        
+Config rc: 0, Run rc: 0                                                                                                                                                                       
+SW cycles: 24948, HW end-to-end cycles: 7136                                                                                                                                                  
+SW C:                                                                                                                                                                                         
+[8942 7292 7706 7880]                                                                                                                                                                         
+[7758 7984 8994 6692]                                                                                                                                                                         
+[8958 6628 8154 7904]                                                                                                                                                                         
+[8142 7864 7602 7100]                                                                                                                                                                         
+HW C:
+[8942 7292 7706 7880]
+[7758 7984 8994 6692]
+[8958 6628 8154 7904]
+[8142 7864 7602 7100]
+
+v2
+=== Systolic GEMM Simple Test (Weight-Stationary) ===
+Dims: (4 x 140) * (140 x 4) -> (4 x 4)
+Preload rc: 0, Config rc: 0, Run rc: 0
+SW cycles: 22742, HW end-to-end cycles: 7013
+SW C:
+[8942 7292 7706 7880]
+[7758 7984 8994 6692]
+[8958 6628 8154 7904]
+[8142 7864 7602 7100]
+HW C:
+[8942 7292 7706 7880]
+[7758 7984 8994 6692]
+[8958 6628 8154 7904]
+[8142 7864 7602 7100]
+PASS: hardware matches software.
+
+
+v1
+=== Systolic GEMM Random Test (Weight-Stationary) ===
+CSV_HEADER,case,M,N,K,sw_cycles,hw_e2e_cycles,mismatches
+CSV_DATA,0,4,4,100,16365,9453,0
+CSV_DATA,1,8,8,100,65198,37390,0
+CSV_DATA,2,16,16,100,259945,148825,0
+PASS: all randomized GEMM cases matched.
+
+v2
+=== Systolic GEMM Random Test (Weight-Stationary) ===
+CSV_HEADER,case,M,N,K,sw_cycles,hw_e2e_cycles,mismatches
+CSV_DATA,0,4,4,100,17964,9452,0
+CSV_DATA,1,8,8,100,71568,28900,0
+CSV_DATA,2,16,16,100,285571,98363,0

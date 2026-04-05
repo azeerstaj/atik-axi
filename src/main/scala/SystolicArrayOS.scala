@@ -2,6 +2,7 @@ package toyrocc
 import chisel3._
 import chisel3.util._
 
+import freechips.rocketchip.rocket._
 import freechips.rocketchip.tile._
 import freechips.rocketchip.tilelink.{TLClientNode, TLMasterParameters, TLMasterPortParameters}
 import org.chipsalliance.cde.config.Parameters
@@ -289,7 +290,7 @@ class SystolicArrayCore(
 }
 
 class SystolicArrayImpl(
-  outer: SystolicArrayRoCC
+  outer: SystolicArrayOSRoCC
 )(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
   with HasCoreParameters
   with HasL1CacheParameters {
@@ -651,7 +652,7 @@ class SystolicArrayImpl(
   }
 }
 
-class SystolicArrayRoCC(
+class SystolicArrayOSRoCC(
   opcodes: OpcodeSet,
   val precision: Int = 16,
   val nRows: Int = 2,

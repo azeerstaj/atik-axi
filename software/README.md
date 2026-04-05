@@ -11,8 +11,10 @@ This repository includes the following:
 * `overlay/`: files injected into Linux rootfs images.
 
 ### Bare Matmul Workloads
-* `workloads/bare/matmul-simple.json`: boots `systolic_matmul_simple.riscv`.
-* `workloads/bare/matmul-random.json`: boots `systolic_matmul_random.riscv`.
+* `workloads/bare/matmul-simple.json`: boots `systolic_matmul_simple_output_stationary.riscv`.
+* `workloads/bare/matmul-random.json`: boots `systolic_matmul_random_output_stationary.riscv`.
+* `workloads/bare/matmul-simple-ws.json`: boots `systolic_matmul_simple_weight_stationary.riscv`.
+* `workloads/bare/matmul-random-ws.json`: boots `systolic_matmul_random_weight_stationary.riscv`.
 * `workloads/bare/matmul-benchmark.json`: boots `systolic_matmul_benchmark.riscv`.
 
 ### Expected Verilator Output:

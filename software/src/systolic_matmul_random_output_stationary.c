@@ -127,7 +127,7 @@ int main(void) {
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
 
   srand(1);
-  printf("=== Systolic GEMM Random Test ===\n");
+  printf("=== Systolic GEMM Random Test (Output-Stationary) ===\n");
   printf("CSV_HEADER,case,M,N,K,sw_cycles,hw_e2e_cycles,mismatches\n");
 
   int total_mismatches = 0;

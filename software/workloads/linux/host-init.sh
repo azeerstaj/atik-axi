@@ -12,6 +12,4 @@ chmod +x overlay/root/run-softmax-smoke.sh
 chmod +x overlay/root/run-matmul-smoke.sh
 
 chmod +x overlay/root/run-test.sh
-chmod +x overlay/root/softmax_norm_test.riscv
-chmod +x overlay/root/systolic_matmul_simple.riscv
-chmod +x overlay/root/test.riscv
+find overlay/root -maxdepth 1 -name '*.riscv' -exec chmod +x {} +
