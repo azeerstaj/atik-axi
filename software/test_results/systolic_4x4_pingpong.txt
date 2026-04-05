@@ -1,0 +1,40 @@
+4x
+=== Systolic GEMM Simple Test ===
+Dims: (4 x 70) * (70 x 4) -> (4 x 4)
+Config rc: 0, Run rc: 0
+SW cycles: 12610, HW end-to-end cycles: 3568
+SW C:
+[4429 3458 3703 3916]
+[4033 3904 4399 3502]
+[4789 3454 4199 4240]
+[4201 4060 3871 3666]
+HW C:
+[4429 3458 3703 3916]
+[4033 3904 4399 3502]
+[4789 3454 4199 4240]
+[4201 4060 3871 3666]
+PASS: hardware matches software.
+
+4x
+=== Systolic GEMM Simple Test ===
+Dims: (4 x 140) * (140 x 4) -> (4 x 4)
+Config rc: 0, Run rc: 0
+SW cycles: 24948, HW end-to-end cycles: 6685
+SW C:
+[8942 7292 7706 7880]
+[7758 7984 8994 6692]
+[8958 6628 8154 7904]
+[8142 7864 7602 7100]
+HW C:
+[8942 7292 7706 7880]
+[7758 7984 8994 6692]
+[8958 6628 8154 7904]
+[8142 7864 7602 7100]
+PASS: hardware matches software.
+
+1.5x
+=== Systolic GEMM Random Test ===
+CSV_HEADER,case,M,N,K,sw_cycles,hw_e2e_cycles,mismatches
+CSV_DATA,0,4,4,100,16392,9197,0
+CSV_DATA,1,8,8,100,65120,36401,0
+CSV_DATA,2,16,16,100,259870,144487,0

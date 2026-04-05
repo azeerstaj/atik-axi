@@ -16,7 +16,7 @@ class SoftmaxAccel extends Config((site, here, up) => {
     })
 })
 
-class MatmulAccel extends Config((site, here, up) => {
+class MatmulAccel2x2 extends Config((site, here, up) => {
   case BuildRoCC => List(
   (p: Parameters) => {
     val sa = LazyModule(new SystolicArrayRoCC(
@@ -28,6 +28,22 @@ class MatmulAccel extends Config((site, here, up) => {
     )(p))
     sa
   }
+  )
+})
+
+
+class MatmulAccel4x4 extends Config((site, here, up) => {
+  case BuildRoCC => List(
+    (p: Parameters) => {
+      val sa = LazyModule(new SystolicArrayRoCC(
+        precision = 16,
+        nRows = 4,
+        nCols = 4,
+        maxK = 64,
+        opcodes = OpcodeSet.custom1,
+      )(p))
+      sa
+    }
   )
 })
 

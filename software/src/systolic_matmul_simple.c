@@ -6,8 +6,8 @@
 #define SA_FUNCT_CONFIG 0
 #define SA_FUNCT_RUN 1
 
-#define SA_ROWS 2
-#define SA_COLS 2
+#define SA_ROWS 4
+#define SA_COLS 4
 
 static inline uint64_t read_cycles(void) {
   uint64_t cycles;
@@ -15,8 +15,11 @@ static inline uint64_t read_cycles(void) {
   return cycles;
 }
 
-static inline uint64_t pack2_u16(uint16_t v0, uint16_t v1) {
-  return ((uint64_t)v1 << 16) | (uint64_t)v0;
+static inline uint64_t pack4_u16(uint16_t v0, uint16_t v1, uint16_t v2, uint16_t v3) {
+  return ((uint64_t)v3 << 48) |
+         ((uint64_t)v2 << 32) |
+         ((uint64_t)v1 << 16) |
+         (uint64_t)v0;
 }
 
 static inline uint64_t sa_config(const uint64_t *a_stream, const uint64_t *b_stream) {
@@ -35,9 +38,9 @@ static inline uint64_t sa_run(uint64_t *c_words, uint64_t k) {
 }
 
 int main(void) {
-  // 2xK times Kx2 -> 2x2 output tile.
+  // 4xK times Kx4 -> 4x4 output tile.
   // Choose K > maxK (default 64) to exercise hardware-side chunking.
-  enum { K = 70 };
+  enum { K = 140 };
 
   static uint16_t A[SA_ROWS][K];
   static uint16_t B[K][SA_COLS];
@@ -60,11 +63,6 @@ int main(void) {
     }
   }
 
-  for (int k = 0; k < K; k++) {
-    a_stream[k] = pack2_u16(A[0][k], A[1][k]);
-    b_stream[k] = pack2_u16(B[k][0], B[k][1]);
-  }
-
   uint64_t sw_start = read_cycles();
   for (int i = 0; i < SA_ROWS; i++) {
     for (int j = 0; j < SA_COLS; j++) {
@@ -78,28 +76,33 @@ int main(void) {
   uint64_t sw_cycles = read_cycles() - sw_start;
 
   uint64_t hw_start = read_cycles();
+  for (int k = 0; k < K; k++) {
+    a_stream[k] = pack4_u16(A[0][k], A[1][k], A[2][k], A[3][k]);
+    b_stream[k] = pack4_u16(B[k][0], B[k][1], B[k][2], B[k][3]);
+  }
   uint64_t cfg_rc = sa_config(a_stream, b_stream);
   uint64_t run_rc = sa_run(c_words, K);
-  uint64_t hw_cycles = read_cycles() - hw_start;
-
   for (int i = 0; i < SA_ROWS; i++) {
     for (int j = 0; j < SA_COLS; j++) {
       hw[i][j] = (uint32_t)c_words[i * SA_COLS + j];
     }
   }
+  uint64_t hw_cycles = read_cycles() - hw_start;
 
   printf("=== Systolic GEMM Simple Test ===\n");
   printf("Dims: (%d x %d) * (%d x %d) -> (%d x %d)\n", SA_ROWS, K, K, SA_COLS, SA_ROWS, SA_COLS);
   printf("Config rc: %lu, Run rc: %lu\n", (unsigned long)cfg_rc, (unsigned long)run_rc);
-  printf("SW cycles: %lu, HW cycles: %lu\n", (unsigned long)sw_cycles, (unsigned long)hw_cycles);
+  printf("SW cycles: %lu, HW end-to-end cycles: %lu\n",
+         (unsigned long)sw_cycles,
+         (unsigned long)hw_cycles);
 
   printf("SW C:\n");
   for (int i = 0; i < SA_ROWS; i++) {
-    printf("[%u %u]\n", sw[i][0], sw[i][1]);
+    printf("[%u %u %u %u]\n", sw[i][0], sw[i][1], sw[i][2], sw[i][3]);
   }
   printf("HW C:\n");
   for (int i = 0; i < SA_ROWS; i++) {
-    printf("[%u %u]\n", hw[i][0], hw[i][1]);
+    printf("[%u %u %u %u]\n", hw[i][0], hw[i][1], hw[i][2], hw[i][3]);
   }
 
   int mismatches = 0;

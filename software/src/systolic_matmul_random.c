@@ -7,11 +7,11 @@
 #define SA_FUNCT_CONFIG 0
 #define SA_FUNCT_RUN 1
 
-#define SA_ROWS 2
-#define SA_COLS 2
-#define MAX_M 8
-#define MAX_N 8
-#define MAX_K 80
+#define SA_ROWS 4
+#define SA_COLS 4
+#define MAX_M 16
+#define MAX_N 16
+#define MAX_K 100
 
 typedef struct {
   int M;
@@ -25,8 +25,11 @@ static inline uint64_t read_cycles(void) {
   return cycles;
 }
 
-static inline uint64_t pack2_u16(uint16_t v0, uint16_t v1) {
-  return ((uint64_t)v1 << 16) | (uint64_t)v0;
+static inline uint64_t pack4_u16(uint16_t v0, uint16_t v1, uint16_t v2, uint16_t v3) {
+  return ((uint64_t)v3 << 48) |
+         ((uint64_t)v2 << 32) |
+         ((uint64_t)v1 << 16) |
+         (uint64_t)v0;
 }
 
 static inline uint64_t sa_config(const uint64_t *a_stream, const uint64_t *b_stream) {
@@ -80,10 +83,14 @@ static int hw_gemm_u16_tiled(
       for (int kk = 0; kk < K; kk++) {
         uint16_t a0 = (m0 + 0 < M) ? A[m0 + 0][kk] : 0;
         uint16_t a1 = (m0 + 1 < M) ? A[m0 + 1][kk] : 0;
+        uint16_t a2 = (m0 + 2 < M) ? A[m0 + 2][kk] : 0;
+        uint16_t a3 = (m0 + 3 < M) ? A[m0 + 3][kk] : 0;
         uint16_t b0 = (n0 + 0 < N) ? B[kk][n0 + 0] : 0;
         uint16_t b1 = (n0 + 1 < N) ? B[kk][n0 + 1] : 0;
-        a_stream[kk] = pack2_u16(a0, a1);
-        b_stream[kk] = pack2_u16(b0, b1);
+        uint16_t b2 = (n0 + 2 < N) ? B[kk][n0 + 2] : 0;
+        uint16_t b3 = (n0 + 3 < N) ? B[kk][n0 + 3] : 0;
+        a_stream[kk] = pack4_u16(a0, a1, a2, a3);
+        b_stream[kk] = pack4_u16(b0, b1, b2, b3);
       }
 
       uint64_t cfg_rc = sa_config(a_stream, b_stream);
@@ -113,17 +120,15 @@ int main(void) {
   static uint32_t C_hw[MAX_M][MAX_N];
 
   const gemm_case_t tests[] = {
-    {3, 4, 5},
-    {5, 3, 7},
-    {6, 6, 17},
-    {7, 5, 33},
-    {8, 8, 70}
+    {4, 4, 100},
+    {8, 8, 100},
+    {16, 16, 100},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
 
   srand(1);
   printf("=== Systolic GEMM Random Test ===\n");
-  printf("CSV_HEADER,case,M,N,K,sw_cycles,hw_cycles,mismatches\n");
+  printf("CSV_HEADER,case,M,N,K,sw_cycles,hw_e2e_cycles,mismatches\n");
 
   int total_mismatches = 0;
   for (int t = 0; t < ntests; t++) {

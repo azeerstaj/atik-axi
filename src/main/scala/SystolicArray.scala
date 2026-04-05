@@ -3,13 +3,8 @@ import chisel3._
 import chisel3.util._
 
 import freechips.rocketchip.tile._
-import freechips.rocketchip.rocket._
 import freechips.rocketchip.tilelink.{TLClientNode, TLMasterParameters, TLMasterPortParameters}
 import org.chipsalliance.cde.config.Parameters
-
-/*
-import scala.math.BigDecimal.RoundingMode
-*/
 
 // Ouptut Stationary Processing Element
 class ProcessingElement(inPrec: Int = 16, accumPrec: Int = 32) extends Module {
@@ -357,41 +352,59 @@ class SystolicArrayImpl(
 
   val leftVec = Wire(Vec(nRows, UInt(precision.W)))
   val topVec = Wire(Vec(nCols, UInt(precision.W)))
+  val leftBufs = Reg(Vec(2, Vec(maxK, UInt(xLen.W))))
+  val topBufs = Reg(Vec(2, Vec(maxK, UInt(xLen.W))))
 
-  // s_idle -> I can take commands.
-  // s_prep_chunk -> Configuring the accelerator
-  //                 *A, *B, *C, M, N, K, ldA, ldB, ldC
-  val s_idle :: s_prep_chunk :: s_core_start :: s_req_left :: s_wait_left :: s_req_top :: s_wait_top :: s_feed_core :: s_wait_core_done :: s_req_put :: s_wait_put :: s_resp :: Nil = Enum(12)
+  val s_idle :: s_prime_buffer :: s_core_start :: s_run :: s_wait_prefetch :: s_req_put :: s_wait_put :: s_resp :: Nil = Enum(8)
   val state = RegInit(s_idle)
+
+  val fill_idle :: fill_req_left :: fill_wait_left :: fill_req_top :: fill_wait_top :: Nil = Enum(5)
+  val fillState = RegInit(fill_idle)
 
   val aBase = RegInit(0.U(xLen.W))
   val bBase = RegInit(0.U(xLen.W))
   val cBase = RegInit(0.U(xLen.W))
   val configured = RegInit(false.B)
 
-  val kReg = RegInit(0.U(kWidth.W))
   val kRemaining = RegInit(0.U(xLen.W))
-  val kBaseIdx = RegInit(0.U(xLen.W))
-  val loadIdx = RegInit(0.U(kWidth.W))
-  val loadBaseIdx = RegInit(0.U(xLen.W))
+  val currChunkK = RegInit(0.U(kWidth.W))
+  val currChunkBaseIdx = RegInit(0.U(xLen.W))
+  val nextChunkK = RegInit(0.U(kWidth.W))
+  val nextChunkBaseIdx = RegInit(0.U(xLen.W))
+  val activeBufSel = RegInit(0.U(1.W))
+  val fillBufSel = RegInit(0.U(1.W))
+  val fillIdx = RegInit(0.U(kWidth.W))
+  val fillK = RegInit(0.U(kWidth.W))
+  val fillBaseIdx = RegInit(0.U(xLen.W))
+  val fillTargetPrefetch = RegInit(false.B)
+  val feedIdx = RegInit(0.U(kWidth.W))
+  val currBufReady = RegInit(false.B)
+  val prefetchedValid = RegInit(false.B)
   val outIdx = RegInit(0.U(outIdxWidth.W))
   val chunkClear = RegInit(true.B)
-
-  val leftWord = RegInit(0.U(xLen.W))
-  val topWord = RegInit(0.U(xLen.W))
 
   val respRd = RegInit(0.U(5.W))
   val respData = RegInit(0.U(xLen.W))
 
+  val feedWordIdx = WireDefault(0.U(kWidth.W))
+  when(currChunkK =/= 0.U) {
+    feedWordIdx := Mux(feedIdx < currChunkK, feedIdx, currChunkK - 1.U)
+  }
+
+  val currentLeftWord = WireDefault(0.U(xLen.W))
+  val currentTopWord = WireDefault(0.U(xLen.W))
+  currentLeftWord := leftBufs(activeBufSel)(feedWordIdx)
+  currentTopWord := topBufs(activeBufSel)(feedWordIdx)
+
   for (i <- 0 until nRows) {
-    leftVec(i) := leftWord(precision * (i + 1) - 1, precision * i)
+    leftVec(i) := currentLeftWord(precision * (i + 1) - 1, precision * i)
   }
   for (j <- 0 until nCols) {
-    topVec(j) := topWord(precision * (j + 1) - 1, precision * j)
+    topVec(j) := currentTopWord(precision * (j + 1) - 1, precision * j)
   }
 
   core.io.cmdValid := false.B
-  core.io.k := kReg
+  core.io.k := currChunkK
   core.io.cmdClear := chunkClear
   core.io.inValid := false.B
   core.io.in_left := 0.U.asTypeOf(core.io.in_left)
@@ -399,22 +412,22 @@ class SystolicArrayImpl(
 
   val (tlOut, edgesOut) = outer.atlNode.out(0)
 
-  val absLoadIdx = loadBaseIdx + loadIdx
-  val leftAddr = aBase + absLoadIdx * xlenBytes.U
-  val topAddr = bBase + absLoadIdx * xlenBytes.U
+  val fillAbsIdx = fillBaseIdx + fillIdx
+  val fillLeftAddr = aBase + fillAbsIdx * xlenBytes.U
+  val fillTopAddr = bBase + fillAbsIdx * xlenBytes.U
   val writeAddr = cBase + outIdx * xlenBytes.U
-  val leftLane = if (wordsPerBeat > 1) leftAddr(beatOffsetBits - 1, lgXlenBytes) else 0.U(laneWidth.W)
-  val topLane = if (wordsPerBeat > 1) topAddr(beatOffsetBits - 1, lgXlenBytes) else 0.U(laneWidth.W)
+  val fillLeftLane = if (wordsPerBeat > 1) fillLeftAddr(beatOffsetBits - 1, lgXlenBytes) else 0.U(laneWidth.W)
+  val fillTopLane = if (wordsPerBeat > 1) fillTopAddr(beatOffsetBits - 1, lgXlenBytes) else 0.U(laneWidth.W)
   val writeLane = if (wordsPerBeat > 1) writeAddr(beatOffsetBits - 1, lgXlenBytes) else 0.U(laneWidth.W)
 
-  val getLeftBits = edgesOut.Get(
+  val getFillLeftBits = edgesOut.Get(
     fromSource = 0.U,
-    toAddress = leftAddr,
+    toAddress = fillLeftAddr,
     lgSize = lgXlenBytes.U
   )._2
-  val getTopBits = edgesOut.Get(
+  val getFillTopBits = edgesOut.Get(
     fromSource = 0.U,
-    toAddress = topAddr,
+    toAddress = fillTopAddr,
     lgSize = lgXlenBytes.U
   )._2
   val putDataWords = Wire(Vec(wordsPerBeat, UInt(xLen.W)))
@@ -434,7 +447,7 @@ class SystolicArrayImpl(
   }
 
   tlOut.a.valid := false.B
-  tlOut.a.bits := getLeftBits
+  tlOut.a.bits := getFillLeftBits
   tlOut.d.ready := false.B
 
   io.cmd.ready := (state === s_idle)
@@ -457,17 +470,27 @@ class SystolicArrayImpl(
     }.elsewhen(funct === 1.U) {
       // funct=1: run one output tile (rs1=C output base, rs2=total K; chunked in hardware)
       cBase := io.cmd.bits.rs1
-      // inner dimension
+      val initialChunkSize = Mux(io.cmd.bits.rs2 > maxK.U, maxK.U, io.cmd.bits.rs2)
       kRemaining := io.cmd.bits.rs2
-      // inner dim idx
-      kBaseIdx := 0.U
-      loadBaseIdx := 0.U
-      loadIdx := 0.U
+      currChunkK := initialChunkSize(kWidth - 1, 0)
+      currChunkBaseIdx := 0.U
+      nextChunkK := 0.U
+      nextChunkBaseIdx := 0.U
+      activeBufSel := 0.U
+      fillBufSel := 0.U
+      fillIdx := 0.U
+      fillK := initialChunkSize(kWidth - 1, 0)
+      fillBaseIdx := 0.U
+      fillTargetPrefetch := false.B
+      feedIdx := 0.U
+      currBufReady := io.cmd.bits.rs2 === 0.U
+      prefetchedValid := false.B
+      fillState := Mux(io.cmd.bits.rs2 === 0.U, fill_idle, fill_req_left)
       outIdx := 0.U
       chunkClear := true.B
       respData := Mux(configured, 0.U, 1.U)
       // If we did not do funct = 0 before jump back to idle
-      state := Mux(configured, s_prep_chunk, s_resp)
+      state := Mux(configured, Mux(io.cmd.bits.rs2 === 0.U, s_core_start, s_prime_buffer), s_resp)
     }.elsewhen(funct === 2.U) {
       // funct=2: status query
       respData := Cat(0.U((xLen - 2).W), core.io.busy, core.io.done)
@@ -478,23 +501,8 @@ class SystolicArrayImpl(
     }
   }
 
-  when(state === s_prep_chunk) {
-    when(kRemaining === 0.U) {
-      when(chunkClear) {
-        kReg := 0.U
-        loadIdx := 0.U
-        loadBaseIdx := 0.U
-        state := s_core_start
-      }.otherwise {
-        outIdx := 0.U
-        state := s_req_put
-      }
-    }.otherwise {
-      // Dynamic inner dim computation
-      val chunkSize = Mux(kRemaining > maxK.U, maxK.U, kRemaining)
-      kReg := chunkSize(kWidth - 1, 0)
-      loadIdx := 0.U
-      loadBaseIdx := kBaseIdx
+  when(state === s_prime_buffer) {
+    when(currBufReady) {
       state := s_core_start
     }
   }
@@ -502,69 +510,117 @@ class SystolicArrayImpl(
   when(state === s_core_start) {
     core.io.cmdValid := true.B
     when(core.io.cmdReady) {
-      state := Mux(kReg === 0.U, s_wait_core_done, s_req_left)
+      feedIdx := 0.U
+      state := s_run
     }
   }
 
-  when(state === s_req_left) {
-    tlOut.a.valid := true.B
-    tlOut.a.bits := getLeftBits
-    when(tlOut.a.fire) {
-      state := s_wait_left
-    }
-  }
-
-  when(state === s_wait_left) {
-    tlOut.d.ready := true.B
-    when(tlOut.d.fire) {
-      leftWord := readDataWords(leftLane)
-      state := s_req_top
-    }
-  }
-
-  when(state === s_req_top) {
-    tlOut.a.valid := true.B
-    tlOut.a.bits := getTopBits
-    when(tlOut.a.fire) {
-      state := s_wait_top
-    }
-  }
-
-  when(state === s_wait_top) {
-    tlOut.d.ready := true.B
-    when(tlOut.d.fire) {
-      topWord := readDataWords(topLane)
-      state := s_feed_core
-    }
-  }
-
-  when(state === s_feed_core) {
+  when(state === s_run && feedIdx < currChunkK) {
     core.io.inValid := true.B
     core.io.in_left := leftVec
     core.io.in_top := topVec
 
     when(core.io.inReady) {
-      val nextIdx = loadIdx + 1.U
-      when(nextIdx === kReg) {
-        state := s_wait_core_done
-      }.otherwise {
-        loadIdx := nextIdx
-        state := s_req_left
-      }
+      val nextIdx = feedIdx + 1.U
+      feedIdx := Mux(nextIdx === currChunkK, currChunkK, nextIdx)
     }
   }
 
-  when(state === s_wait_core_done) {
+  when(state === s_run && fillState === fill_idle) {
+    val remainingAfterCurrent = kRemaining - currChunkK
+    val canPrefetch = remainingAfterCurrent =/= 0.U && !prefetchedValid
+    when(canPrefetch) {
+      val nextChunkSize = Mux(remainingAfterCurrent > maxK.U, maxK.U, remainingAfterCurrent)
+      nextChunkK := nextChunkSize(kWidth - 1, 0)
+      nextChunkBaseIdx := currChunkBaseIdx + currChunkK
+      fillBufSel := activeBufSel ^ 1.U
+      fillIdx := 0.U
+      fillK := nextChunkSize(kWidth - 1, 0)
+      fillBaseIdx := currChunkBaseIdx + currChunkK
+      fillTargetPrefetch := true.B
+      fillState := fill_req_left
+    }
+  }
+
+  when(state === s_run) {
     when(core.io.done) {
-      val remAfter = kRemaining - kReg
+      val remAfter = kRemaining - currChunkK
       kRemaining := remAfter
-      kBaseIdx := kBaseIdx + kReg
       chunkClear := false.B
       when(remAfter === 0.U) {
         outIdx := 0.U
         state := s_req_put
+      }.elsewhen(prefetchedValid) {
+        activeBufSel := activeBufSel ^ 1.U
+        currChunkK := nextChunkK
+        currChunkBaseIdx := nextChunkBaseIdx
+        prefetchedValid := false.B
+        feedIdx := 0.U
+        state := s_core_start
       }.otherwise {
-        state := s_prep_chunk
+        state := s_wait_prefetch
+      }
+    }
+  }
+
+  when(state === s_wait_prefetch) {
+    when(prefetchedValid) {
+      activeBufSel := activeBufSel ^ 1.U
+      currChunkK := nextChunkK
+      currChunkBaseIdx := nextChunkBaseIdx
+      prefetchedValid := false.B
+      feedIdx := 0.U
+      state := s_core_start
+    }
+  }
+
+  when(fillState === fill_req_left) {
+    tlOut.a.valid := true.B
+    tlOut.a.bits := getFillLeftBits
+    when(tlOut.a.fire) {
+      fillState := fill_wait_left
+    }
+  }
+
+  when(fillState === fill_wait_left) {
+    tlOut.d.ready := true.B
+    when(tlOut.d.fire) {
+      leftBufs(fillBufSel)(fillIdx) := readDataWords(fillLeftLane)
+      val nextIdx = fillIdx + 1.U
+      when(nextIdx === fillK) {
+        fillIdx := 0.U
+        fillState := fill_req_top
+      }.otherwise {
+        fillIdx := nextIdx
+        fillState := fill_req_left
+      }
+    }
+  }
+
+  when(fillState === fill_req_top) {
+    tlOut.a.valid := true.B
+    tlOut.a.bits := getFillTopBits
+    when(tlOut.a.fire) {
+      fillState := fill_wait_top
+    }
+  }
+
+  when(fillState === fill_wait_top) {
+    tlOut.d.ready := true.B
+    when(tlOut.d.fire) {
+      topBufs(fillBufSel)(fillIdx) := readDataWords(fillTopLane)
+      val nextIdx = fillIdx + 1.U
+      when(nextIdx === fillK) {
+        fillIdx := 0.U
+        fillState := fill_idle
+        when(fillTargetPrefetch) {
+          prefetchedValid := true.B
+        }.otherwise {
+          currBufReady := true.B
+        }
+      }.otherwise {
+        fillIdx := nextIdx
+        fillState := fill_req_top
       }
     }
   }
