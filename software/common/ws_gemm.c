@@ -3,8 +3,12 @@
 #include <stdint.h>
 #include <string.h>
 
+// Where it is used??
 static inline __attribute__((always_inline)) uint64_t load_u64_unaligned(
     const void *WS_GEMM_RESTRICT src) {
+  
+  // Isnt this a local varible and popped from the stack?
+  // If so how are we able to return it ?
   uint64_t value;
   memcpy(&value, src, sizeof(value));
   return value;

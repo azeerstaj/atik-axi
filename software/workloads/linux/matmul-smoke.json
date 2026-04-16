@@ -4,5 +4,5 @@
   "base" : "br-base.json",
   "overlay" : "overlay",
   "host-init" : "workloads/linux/host-init.sh",
-  "command" : "echo SELAMLAR KNK 2 && /root/run-matmul-smoke.sh"
+  "command" : "/root/run-matmul-smoke.sh"
 }

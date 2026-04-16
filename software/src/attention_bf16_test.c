@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define MAX_Q_ROWS 8
 #define MAX_KV_ROWS 128
@@ -21,12 +22,22 @@ typedef struct {
   int causal;
 } attention_case_t;
 
+typedef struct {
+  uint64_t total_cycles;
+  uint64_t qk_cycles;
+  uint64_t score_post_cycles;
+  uint64_t softmax_cycles;
+  uint64_t pv_cycles;
+} sw_attention_stats_t;
+
 static uint16_t q_matrix[MAX_Q_ROWS][MAX_D_K] __attribute__((aligned(64)));
 static uint16_t k_matrix[MAX_KV_ROWS][MAX_D_K] __attribute__((aligned(64)));
 static uint16_t k_t_matrix[MAX_D_K][MAX_KV_ROWS] __attribute__((aligned(64)));
 static uint16_t v_matrix[MAX_KV_ROWS][MAX_VALUE_COLS] __attribute__((aligned(64)));
 static uint16_t out_matrix[MAX_Q_ROWS][MAX_VALUE_COLS] __attribute__((aligned(64)));
 
+static float sw_scores[MAX_Q_ROWS][MAX_KV_ROWS];
+static float sw_probs[MAX_Q_ROWS][MAX_KV_ROWS];
 static float sw_output[MAX_Q_ROWS][MAX_VALUE_COLS];
 
 static uint16_t scores_bf16[MAX_Q_ROWS][MAX_KV_ROWS] __attribute__((aligned(64)));
@@ -52,6 +63,105 @@ static void transpose_k_to_k_t(int kv_rows, int d_k) {
   }
 }
 
+static void sw_qk_reference(
+    const uint16_t *Q,
+    int ldq,
+    const uint16_t *K,
+    int ldk,
+    int q_rows,
+    int kv_rows,
+    int d_k,
+    float *scores,
+    int lds) {
+  for (int qr = 0; qr < q_rows; qr++) {
+    for (int kv = 0; kv < kv_rows; kv++) {
+      double dot = 0.0;
+      for (int d = 0; d < d_k; d++) {
+        const float q_val = bf16_to_float(Q[qr * ldq + d]);
+        const float k_val = bf16_to_float(K[kv * ldk + d]);
+        dot += (double)q_val * (double)k_val;
+      }
+      scores[qr * lds + kv] = (float)dot;
+    }
+  }
+}
+
+static void sw_apply_score_modifiers(
+    float *scores,
+    int rows,
+    int cols,
+    int stride,
+    const attention_params_t *params) {
+  const float scale = (params != 0) ? params->scale : 1.0f;
+  const uint16_t *mask_bf16 = (params != 0) ? params->mask_bf16 : 0;
+  const int mask_stride = (params != 0) ? params->mask_stride : 0;
+  const int causal = (params != 0) ? params->causal : 0;
+  const int query_position_base = (params != 0) ? params->query_position_base : 0;
+
+  for (int r = 0; r < rows; r++) {
+    for (int c = 0; c < cols; c++) {
+      float value = scores[r * stride + c] * scale;
+      if (mask_bf16 != 0) {
+        value += bf16_to_float(mask_bf16[r * mask_stride + c]);
+      }
+      if (causal && c > query_position_base + r) {
+        value = -1.0e9f;
+      }
+      scores[r * stride + c] = value;
+    }
+  }
+}
+
+static void sw_softmax_rows_reference(
+    const float *scores,
+    int rows,
+    int cols,
+    int lds,
+    float *probs,
+    int ldp) {
+  for (int r = 0; r < rows; r++) {
+    float max_score = -INFINITY;
+    for (int c = 0; c < cols; c++) {
+      const float value = scores[r * lds + c];
+      if (value > max_score) {
+        max_score = value;
+      }
+    }
+
+    double denom = 0.0;
+    for (int c = 0; c < cols; c++) {
+      denom += exp((double)(scores[r * lds + c] - max_score));
+    }
+
+    for (int c = 0; c < cols; c++) {
+      probs[r * ldp + c] =
+          (float)(exp((double)(scores[r * lds + c] - max_score)) / denom);
+    }
+  }
+}
+
+static void sw_pv_reference(
+    const float *probs,
+    int ldp,
+    const uint16_t *V,
+    int ldv,
+    int q_rows,
+    int kv_rows,
+    int value_cols,
+    float *output,
+    int ldout) {
+  for (int qr = 0; qr < q_rows; qr++) {
+    for (int vc = 0; vc < value_cols; vc++) {
+      double acc = 0.0;
+      for (int kv = 0; kv < kv_rows; kv++) {
+        const float v_val = bf16_to_float(V[kv * ldv + vc]);
+        acc += (double)probs[qr * ldp + kv] * (double)v_val;
+      }
+      output[qr * ldout + vc] = (float)acc;
+    }
+  }
+}
+
 static void sw_attention_reference(
     const uint16_t *Q,
     int ldq,
@@ -64,55 +174,45 @@ static void sw_attention_reference(
     int d_k,
     int value_cols,
     const attention_params_t *params,
+    float *scores,
+    int lds,
+    float *probs,
+    int ldp,
     float *output,
-    int ldout) {
-  float score_row[MAX_KV_ROWS];
-  float prob_row[MAX_KV_ROWS];
+    int ldout,
+    sw_attention_stats_t *stats) {
+  const int measure = (stats != 0);
+  uint64_t total_start = 0;
+  uint64_t phase_start = 0;
 
-  for (int qr = 0; qr < q_rows; qr++) {
-    float max_score = -INFINITY;
-    for (int kv = 0; kv < kv_rows; kv++) {
-      double dot = 0.0;
-      for (int d = 0; d < d_k; d++) {
-        const float q_val = bf16_to_float(Q[qr * ldq + d]);
-        const float k_val = bf16_to_float(K[kv * ldk + d]);
-        dot += (double)q_val * (double)k_val;
-      }
+  if (measure) {
+    memset(stats, 0, sizeof(*stats));
+    total_start = attention_read_cycles();
+    phase_start = total_start;
+  }
 
-      float score = (float)dot;
-      if (params != 0) {
-        score *= params->scale;
-        if (params->mask_bf16 != 0) {
-          score += bf16_to_float(params->mask_bf16[qr * params->mask_stride + kv]);
-        }
-        if (params->causal && kv > params->query_position_base + qr) {
-          score = -1.0e9f;
-        }
-      }
+  sw_qk_reference(Q, ldq, K, ldk, q_rows, kv_rows, d_k, scores, lds);
+  if (measure) {
+    stats->qk_cycles = attention_read_cycles() - phase_start;
+    phase_start = attention_read_cycles();
+  }
 
-      score_row[kv] = score;
-      if (score > max_score) {
-        max_score = score;
-      }
-    }
+  sw_apply_score_modifiers(scores, q_rows, kv_rows, lds, params);
+  if (measure) {
+    stats->score_post_cycles = attention_read_cycles() - phase_start;
+    phase_start = attention_read_cycles();
+  }
 
-    double denom = 0.0;
-    for (int kv = 0; kv < kv_rows; kv++) {
-      denom += exp((double)(score_row[kv] - max_score));
-    }
+  sw_softmax_rows_reference(scores, q_rows, kv_rows, lds, probs, ldp);
+  if (measure) {
+    stats->softmax_cycles = attention_read_cycles() - phase_start;
+    phase_start = attention_read_cycles();
+  }
 
-    for (int kv = 0; kv < kv_rows; kv++) {
-      prob_row[kv] = (float)(exp((double)(score_row[kv] - max_score)) / denom);
-    }
-
-    for (int vc = 0; vc < value_cols; vc++) {
-      double acc = 0.0;
-      for (int kv = 0; kv < kv_rows; kv++) {
-        const float v_val = bf16_to_float(V[kv * ldv + vc]);
-        acc += (double)prob_row[kv] * (double)v_val;
-      }
-      output[qr * ldout + vc] = (float)acc;
-    }
+  sw_pv_reference(probs, ldp, V, ldv, q_rows, kv_rows, value_cols, output, ldout);
+  if (measure) {
+    stats->pv_cycles = attention_read_cycles() - phase_start;
+    stats->total_cycles = attention_read_cycles() - total_start;
   }
 }
 
@@ -147,6 +247,9 @@ static void print_attention_output_samples(
 }
 
 int main(void) {
+
+  printf("=== BF16 Attention Test ===\n");
+  // q_rows, kv_rows, d_k, value_cols, causal;
   const attention_case_t tests[] = {
       {1, 16, 32, 32, 0},
       {4, 16, 32, 32, 0},
@@ -171,8 +274,7 @@ int main(void) {
       MAX_VALUE_COLS);
 
   srand(11);
-  printf("=== BF16 Attention Test ===\n");
-  printf("CSV_HEADER,case,q_rows,kv_rows,d_k,value_cols,causal,sw_cycles,hw_total_cycles,hw_accel_cycles,qk_pack_cycles,qk_hw_e2e_cycles,qk_pack_a_cycles,qk_preload_cycles,qk_run_cycles,qk_copy_out_cycles,score_post_cycles,softmax_hw_e2e_cycles,softmax_pass1_cycles,softmax_pass2_cycles,pv_pack_cycles,pv_hw_e2e_cycles,pv_pack_a_cycles,pv_preload_cycles,pv_run_cycles,pv_copy_out_cycles,mismatches\n");
+  printf("CSV_HEADER,case,q_rows,kv_rows,d_k,value_cols,causal,sw_total_cycles,sw_qk_cycles,sw_score_post_cycles,sw_softmax_cycles,sw_pv_cycles,hw_total_cycles,hw_accel_cycles,qk_pack_cycles,qk_hw_e2e_cycles,qk_pack_a_cycles,qk_preload_cycles,qk_run_cycles,qk_copy_out_cycles,score_post_cycles,softmax_hw_e2e_cycles,softmax_pass1_cycles,softmax_pass2_cycles,pv_pack_cycles,pv_hw_e2e_cycles,pv_pack_a_cycles,pv_preload_cycles,pv_run_cycles,pv_copy_out_cycles,mismatches\n");
 
   int total_mismatches = 0;
 
@@ -205,7 +307,7 @@ int main(void) {
       }
     }
 
-    const uint64_t sw_start = attention_read_cycles();
+    sw_attention_stats_t sw_stats;
     sw_attention_reference(
         &q_matrix[0][0],
         MAX_D_K,
@@ -218,9 +320,13 @@ int main(void) {
         tc.d_k,
         tc.value_cols,
         &params,
+        &sw_scores[0][0],
+        MAX_KV_ROWS,
+        &sw_probs[0][0],
+        MAX_KV_ROWS,
         &sw_output[0][0],
-        MAX_VALUE_COLS);
-    const uint64_t sw_cycles = attention_read_cycles() - sw_start;
+        MAX_VALUE_COLS,
+        &sw_stats);
 
     attention_stats_t stats;
     const int rc = attention_bf16(
@@ -269,14 +375,26 @@ int main(void) {
     }
 
     total_mismatches += mismatches;
-    printf("CSV_DATA,%d,%d,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%d\n",
+    printf(
+           "CSV_DATA,%d,%d,%d,%d,%d,%d,"
+           "%lu,%lu,%lu,%lu,%lu,"
+           "%lu,%lu,"
+           "%lu,%lu,%lu,%lu,%lu,%lu,"
+           "%lu,"
+           "%lu,%lu,%lu,"
+           "%lu,%lu,%lu,%lu,%lu,%lu,"
+           "%d\n",
            t,
            tc.q_rows,
            tc.kv_rows,
            tc.d_k,
            tc.value_cols,
            tc.causal,
-           (unsigned long)sw_cycles,
+           (unsigned long)sw_stats.total_cycles,
+           (unsigned long)sw_stats.qk_cycles,
+           (unsigned long)sw_stats.score_post_cycles,
+           (unsigned long)sw_stats.softmax_cycles,
+           (unsigned long)sw_stats.pv_cycles,
            (unsigned long)stats.total_cycles,
            (unsigned long)attention_accelerator_cycles(&stats),
            (unsigned long)stats.qk_pack_cycles,

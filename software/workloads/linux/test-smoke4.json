@@ -4,5 +4,5 @@
   "workdir" : "../..",
   "overlay" : "overlay",
   "host-init" : "workloads/linux/host-init.sh",
-  "command" : "/root/systolic_matmul_simple_weight_stationary.riscv"
+  "command" : "/root/systolic_matmul_random_bfloat16_weight_stationary.riscv"
 }

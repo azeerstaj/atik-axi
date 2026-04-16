@@ -11,11 +11,16 @@ This repository includes the following:
 * `overlay/`: files injected into Linux rootfs images.
 
 ### Bare Matmul Workloads
-* `workloads/bare/matmul-simple.json`: boots `systolic_matmul_simple_output_stationary.riscv`.
-* `workloads/bare/matmul-random.json`: boots `systolic_matmul_random_output_stationary.riscv`.
-* `workloads/bare/matmul-simple-ws.json`: boots `systolic_matmul_simple_weight_stationary.riscv`.
-* `workloads/bare/matmul-random-ws.json`: boots `systolic_matmul_random_weight_stationary.riscv`.
-* `workloads/bare/matmul-benchmark.json`: boots `systolic_matmul_benchmark.riscv`.
+* `workloads/bare/matmul-simple.json`: boots `systolic_matmul_simple_bfloat16_weight_stationary.riscv`.
+* `workloads/bare/matmul-random.json`: boots `systolic_matmul_random_bfloat16_weight_stationary.riscv`.
+* `workloads/bare/matmul-simple-ws.json`: boots `systolic_matmul_simple_bfloat16_weight_stationary.riscv`.
+* `workloads/bare/matmul-random-ws.json`: boots `systolic_matmul_random_bfloat16_weight_stationary.riscv`.
+* `workloads/bare/matmul-benchmark.json`: boots `systolic_matmul_benchmark_bfloat16_weight_stationary.riscv`.
+
+### Bare Softmax And Attention Workloads
+* `workloads/bare/softmax-smoke.json`: boots `softmax_norm_test.riscv`.
+* `workloads/bare/softmax-rows-bf16.json`: boots `softmax_rows_bf16_test.riscv`.
+* `workloads/bare/attention-bf16.json`: boots `attention_bf16_test.riscv`.
 
 ### Expected Verilator Output:
 ```sh
