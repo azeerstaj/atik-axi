@@ -6,7 +6,7 @@
 
 #define SA_ROWS 4
 #define SA_COLS 4
-#define SIMPLE_K 140
+#define SIMPLE_K 8
 
 static volatile float sw_float_checksum_sink;
 

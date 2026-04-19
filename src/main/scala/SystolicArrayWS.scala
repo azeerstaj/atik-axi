@@ -6,7 +6,7 @@ import chisel3.util._
 import freechips.rocketchip.diplomacy.IdRange
 import freechips.rocketchip.rocket._
 import freechips.rocketchip.tile._
-import freechips.rocketchip.tilelink.{TLClientNode, TLMasterParameters, TLMasterPortParameters}
+import freechips.rocketchip.tilelink.{TLClientNode, TLMasterParameters, TLMasterPortParameters, TLMessages}
 import org.chipsalliance.cde.config.Parameters
 
 class WeightStationaryArrayCoreIO(
@@ -363,6 +363,11 @@ class SystolicArrayWSImpl(
   // Number of TileLink source IDs the accelerator may use for outstanding requests.
   // Different source IDs let multiple requests stay in flight at once so responses can be matched back later.
   private val tlSourceIds = outer.numTLSourceIds
+  // Reserve the highest source ID for C writeback acknowledgements so data returns and write acks
+  // can never alias on the same logical source.
+  private val writeTlSourceId = tlSourceIds - 1
+  // Active / prefetched A reads are serialized, so they can share one source ID.
+  private val aReadTlSourceId = 0
   // Bit-width needed to encode those TileLink source IDs.
   private val tlSourceIdxWidth = math.max(1, log2Ceil(tlSourceIds))
   // Bit-width needed to choose a word lane within one beat.
@@ -377,7 +382,7 @@ class SystolicArrayWSImpl(
   require(cacheDataBits % xLen == 0, s"cacheDataBits must be a multiple of xLen (${cacheDataBits} % ${xLen})")
   require(wordsPerBeat > 0, "wordsPerBeat must be > 0")
   require(isPow2(wordsPerBeat), s"wordsPerBeat must be a power of two, got ${wordsPerBeat}")
-  require(tlSourceIds > 0, s"numTLSourceIds must be > 0, got ${tlSourceIds}")
+  require(tlSourceIds >= 2, s"numTLSourceIds must be >= 2 so writeback can reserve a dedicated source ID, got ${tlSourceIds}")
   require(nRows > 0 && nCols > 0, "mesh dimensions must be > 0")
   require(nRows == nCols, "weight-stationary array currently requires a square mesh")
   require(maxK > 0, "maxK must be > 0")
@@ -540,7 +545,8 @@ class SystolicArrayWSImpl(
   val cachedBBase = RegInit(0.U(xLen.W))
   // True when the current B fill is happening only for this run and should not become pinned reusable weights.
   val bFillForRun = RegInit(false.B)
-  // One bit per TileLink source ID indicating whether a B-fill request is still in flight on that source.
+  // One bit per read-capable TileLink source ID indicating whether a B-fill request is still in flight on that source.
+  // The final source ID is reserved for writeback and intentionally never issued by the B-fill path.
   val bFillInflight = RegInit(VecInit(Seq.fill(tlSourceIds)(false.B)))
   // Remembers which bCacheBuf index each in-flight B-fill request will write back into when its response returns.
   val bFillInflightIdx = Reg(Vec(tlSourceIds, UInt(cacheIdxWidth.W)))
@@ -614,6 +620,10 @@ class SystolicArrayWSImpl(
 
   // TileLink client port used for A/B reads and C writes.
   val (tlOut, edgesOut) = outer.atlNode.out(0)
+  val dHasData = edgesOut.hasData(tlOut.d.bits)
+  val dSource = tlOut.d.bits.source(tlSourceIdxWidth - 1, 0)
+  val dIsReadResp = dHasData && (tlOut.d.bits.opcode === TLMessages.AccessAckData)
+  val dIsWriteAck = !dHasData && (tlOut.d.bits.opcode === TLMessages.AccessAck)
 
   // Converting local (tile/chunk) indices to global ones (memory).
   // Absolute A-word index currently being filled for the active chunk.
@@ -629,20 +639,27 @@ class SystolicArrayWSImpl(
 
   // Beat-aligned word index for the A fetch.
   val aBeatBaseIdx = if (wordsPerBeat > 1) (absFillIdx >> laneWidth) << laneWidth else absFillIdx
-  // Beat-aligned word index for the C writeback.
-  val writeBeatBaseIdx = if (wordsPerBeat > 1) (outIdx >> laneWidth) << laneWidth else outIdx
 
   // Beat-aligned byte address for the A fetch.
   val aBeatAddr = aBase + aBeatBaseIdx * xlenBytes.U
   // Beat-aligned byte address for the C writeback.
-  val writeBeatAddr = cBase + writeBeatBaseIdx * xlenBytes.U
+  // Align from the full byte address so the request remains legal even if cBase is only xLen-aligned.
+  val writeBeatAddr = if (wordsPerBeat > 1) {
+    writeAddr & ~((beatBytes - 1).U(xLen.W))
+  } else {
+    writeAddr
+  }
 
   // TileLink transfer size:
   // one full beat when multiple xLen words fit per beat, otherwise one xLen word.
   val readLgSize = if (wordsPerBeat > 1) beatOffsetBits.U else lgXlenBytes.U
 
   // Prebuilt TileLink Get message for active A-chunk fills.
-  val getABits = edgesOut.Get(fromSource = 0.U, toAddress = aBeatAddr, lgSize = readLgSize)._2
+  val getABits = edgesOut.Get(
+    fromSource = aReadTlSourceId.U(tlSourceIdxWidth.W),
+    toAddress = aBeatAddr,
+    lgSize = readLgSize
+  )._2
 
   // Address generation for the A-prefetch path, parallel to the active A-fill path.
   val prefetchAAddr = aBase + (prefetchedBaseIdx + prefetchFillIdx) * xlenBytes.U
@@ -650,7 +667,11 @@ class SystolicArrayWSImpl(
   val prefetchABeatBaseIdx = if (wordsPerBeat > 1) ((prefetchedBaseIdx + prefetchFillIdx) >> laneWidth) << laneWidth else (prefetchedBaseIdx + prefetchFillIdx)
   val prefetchABeatAddr = aBase + prefetchABeatBaseIdx * xlenBytes.U
   // Prebuilt TileLink Get message for prefetched A chunks.
-  val getPrefetchABits = edgesOut.Get(fromSource = 0.U, toAddress = prefetchABeatAddr, lgSize = readLgSize)._2
+  val getPrefetchABits = edgesOut.Get(
+    fromSource = aReadTlSourceId.U(tlSourceIdxWidth.W),
+    toAddress = prefetchABeatAddr,
+    lgSize = readLgSize
+  )._2
 
   // For each word lane returned in a TileLink beat, compute which A-chunk slot it should fill.
   val aReadDestIdxs = Wire(Vec(wordsPerBeat, UInt(chunkWidth.W)))
@@ -687,7 +708,9 @@ class SystolicArrayWSImpl(
   // Number of packed B words needed for the current preload/run.
   val bRequestedK = bCacheK(cacheIdxWidth - 1, 0)
   // Bitmask of TileLink source IDs currently occupied by in-flight B reads.
-  val bFillBusyMask = bFillInflight.asUInt
+  val bFillBusyMask = VecInit(Seq.tabulate(tlSourceIds) { i =>
+    if (i == writeTlSourceId) true.B else bFillInflight(i)
+  }).asUInt
   // True when at least one TileLink source ID is free to issue another B read.
   val bHasFreeSource = !bFillBusyMask.andR
   // One-hot selection of the next free TileLink source ID.
@@ -709,7 +732,7 @@ class SystolicArrayWSImpl(
     lgSize = readLgSize
   )._2
   // Source ID carried by the returning B-fill response.
-  val bRespSource = tlOut.d.bits.source(tlSourceIdxWidth - 1, 0)
+  val bRespSource = dSource
   // Starting bCacheBuf index associated with that response's original request.
   val bRespBaseIdx = bFillInflightIdx(bRespSource)
   // Destination bCacheBuf slot for each returned word lane in the response beat.
@@ -748,11 +771,16 @@ class SystolicArrayWSImpl(
       putDataWords(w) := Mux(writeLaneValids(w), flatOut(writeLaneWordIdxs(w)).pad(xLen), 0.U)
     }
   }
+  val putMaskBytes = Wire(Vec(beatBytes, Bool()))
+  for (byte <- 0 until beatBytes) {
+    putMaskBytes(byte) := writeLaneValids(byte / xlenBytes)
+  }
   val putBits = edgesOut.Put(
-    fromSource = 0.U,
+    fromSource = writeTlSourceId.U(tlSourceIdxWidth.W),
     toAddress = writeBeatAddr,
     lgSize = readLgSize,
-    data = putDataWords.asUInt
+    data = putDataWords.asUInt,
+    mask = putMaskBytes.asUInt
   )._2
 
   val readDataWords = Wire(Vec(wordsPerBeat, UInt(xLen.W)))
@@ -969,6 +997,9 @@ class SystolicArrayWSImpl(
       bIssueIdx := bIssueIdx + bIssueWords
     }
     when(tlOut.d.fire) {
+      assert(dIsReadResp, "WS matmul expected AccessAckData on B-cache fill response")
+      assert(bRespSource =/= writeTlSourceId.U(tlSourceIdxWidth.W), "WS matmul received writeback source ID during B-cache fill")
+      assert(bFillInflight(bRespSource), "WS matmul received unexpected B-cache fill response source")
       for (w <- 0 until wordsPerBeat) {
         when(bRespLaneValids(w)) {
           bCacheBuf(bRespDestIdxs(w)) := readDataWords(w)
@@ -1027,6 +1058,8 @@ class SystolicArrayWSImpl(
   when(state === s_wait_fill_a) {
     tlOut.d.ready := true.B
     when(tlOut.d.fire) {
+      assert(dIsReadResp, "WS matmul expected AccessAckData on active A-fill response")
+      assert(dSource === aReadTlSourceId.U(tlSourceIdxWidth.W), "WS matmul received unexpected source ID on active A-fill response")
       for (w <- 0 until wordsPerBeat) {
         when(aReadLaneValids(w)) {
           aChunkBufs(activeABufSel)(aReadDestIdxs(w)) := readDataWords(w)
@@ -1057,6 +1090,8 @@ class SystolicArrayWSImpl(
       (state === s_load_weights || state === s_feed_rows || state === s_wait_chunk_out)) {
     tlOut.d.ready := true.B
     when(tlOut.d.fire) {
+      assert(dIsReadResp, "WS matmul expected AccessAckData on prefetched A-fill response")
+      assert(dSource === aReadTlSourceId.U(tlSourceIdxWidth.W), "WS matmul received unexpected source ID on prefetched A-fill response")
       for (w <- 0 until wordsPerBeat) {
         when(prefetchReadLaneValids(w)) {
           aChunkBufs(prefetchedABufSel)(prefetchReadDestIdxs(w)) := readDataWords(w)
@@ -1121,6 +1156,8 @@ class SystolicArrayWSImpl(
   when(state === s_wait_put) {
     tlOut.d.ready := true.B
     when(tlOut.d.fire) {
+      assert(dIsWriteAck, "WS matmul expected AccessAck on C writeback response")
+      assert(dSource === writeTlSourceId.U(tlSourceIdxWidth.W), "WS matmul received unexpected source ID on C writeback response")
       val nextOutIdx = outIdx + writeWordsThisBeat
       when(nextOutIdx >= outputWordCount.U) {
         respData := 0.U
