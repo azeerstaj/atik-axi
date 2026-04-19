@@ -155,7 +155,7 @@ def main() -> None:
             zorder=4,
         )
 
-    plt.xticks(x_positions, labels)
+    plt.xticks(x_positions, labels, rotation=45, ha="right")
     plt.xlabel("GEMM size (M x N x K)")
     plt.ylabel("Cycles")
     plt.title(args.title or title_from_log or "GEMM Cycle Comparison")

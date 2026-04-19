@@ -344,3 +344,4 @@ hs_err_pid*
 .idea/
 .vscode/
 .metals
+__pycache__/

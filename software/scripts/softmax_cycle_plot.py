@@ -46,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also open the plot window after saving.",
     )
+    parser.add_argument(
+        "--log-scale",
+        action="store_true",
+        help="Plot both axes on a logarithmic scale to reduce clutter for wide size ranges.",
+    )
     return parser.parse_args()
 
 
@@ -201,12 +206,20 @@ def main() -> None:
     y_max = max(max(sw_cycles), max(hw_cycles), max(pass1_cycles), max(pass2_cycles))
     y_span = max(y_max - y_min, 1)
 
+    if args.log_scale:
+      plt.xscale("log")
+      plt.yscale("log")
+
     for x_pos, point in zip(x_values, points):
         faster = (float(point.sw_cycles) / float(point.hw_cycles)) if point.hw_cycles != 0 else float("inf")
         low_y = min(point.sw_cycles, point.hw_cycles)
         high_y = max(point.sw_cycles, point.hw_cycles)
-        mid_y = (point.sw_cycles + point.hw_cycles) / 2.0
-        label_y = min(high_y + 0.05 * y_span, y_max + 0.10 * y_span)
+        if args.log_scale:
+            mid_y = (float(point.sw_cycles) * float(point.hw_cycles)) ** 0.5
+            label_y = min(high_y * 1.18, y_max * 1.10)
+        else:
+            mid_y = (point.sw_cycles + point.hw_cycles) / 2.0
+            label_y = min(high_y + 0.05 * y_span, y_max + 0.10 * y_span)
 
         plt.plot(
             [x_pos, x_pos],
@@ -235,24 +248,26 @@ def main() -> None:
             },
             zorder=5,
         )
-        plt.annotate(
-            point.detail_label,
-            xy=(x_pos, low_y),
-            xytext=(0, -16),
-            textcoords="offset points",
-            ha="center",
-            va="top",
-            fontsize=8,
-            color="#555555",
-            rotation=0,
-            zorder=5,
-        )
+        if not args.log_scale:
+            plt.annotate(
+                point.detail_label,
+                xy=(x_pos, low_y),
+                xytext=(0, -16),
+                textcoords="offset points",
+                ha="center",
+                va="top",
+                fontsize=8,
+                color="#555555",
+                rotation=0,
+                zorder=5,
+            )
 
-    plt.xticks(x_values, [str(value) for value in x_values])
+    if not args.log_scale:
+        plt.xticks(x_values, [str(value) for value in x_values])
     plt.xlabel("Total data size (elements)")
     plt.ylabel("Cycles")
     plt.title(args.title or title_from_log or "Softmax Cycle Comparison")
-    plt.grid(True, axis="y", linestyle="--", alpha=0.5)
+    plt.grid(True, axis="y", linestyle="--", alpha=0.5, which="both" if args.log_scale else "major")
     plt.legend()
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)

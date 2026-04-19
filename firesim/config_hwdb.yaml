@@ -1,0 +1,14 @@
+MatmulAccel4x4WSBF16:
+    agfi: agfi-0eb1594fd4d7a2bfc
+    deploy_quintuplet_override: null
+    custom_runtime_config: null
+
+SoftmaxAccel128v2:
+    agfi: agfi-0dc4b73a6671d7818                                                                          
+    deploy_quintuplet_override: null                                                                      
+    custom_runtime_config: null                                                                           
+
+SoftmaxAccel128:
+    agfi: agfi-0f9e5c3340edbe3aa
+    deploy_quintuplet_override: null
+    custom_runtime_config: null
