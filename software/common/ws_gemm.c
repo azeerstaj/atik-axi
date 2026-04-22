@@ -24,16 +24,26 @@ static inline __attribute__((always_inline)) uint64_t load_u64_aligned(
   return value;
 }
 
-static inline uint64_t *a_tile_ptr(const ws_gemm_workspace_t *WS_GEMM_RESTRICT workspace, int m0) {
-  return workspace->a_tiles + (m0 / WS_GEMM_ROWS) * workspace->max_k;
+static inline uint64_t *a_tile_ptr(
+    const ws_gemm_workspace_t *WS_GEMM_RESTRICT workspace,
+    int m0) {
+  return workspace->a_tiles + (m0 / workspace->tile_rows) * workspace->max_k;
 }
 
-static inline uint64_t *b_tile_ptr(uint64_t *WS_GEMM_RESTRICT b_tiles, int max_k, int n0) {
-  return b_tiles + (n0 / WS_GEMM_COLS) * max_k;
+static inline uint64_t *b_tile_ptr(
+    uint64_t *WS_GEMM_RESTRICT b_tiles,
+    int max_k,
+    int n0,
+    int tile_cols) {
+  return b_tiles + (n0 / tile_cols) * max_k;
 }
 
-static inline const uint64_t *b_tile_ptr_const(const uint64_t *WS_GEMM_RESTRICT b_tiles, int max_k, int n0) {
-  return b_tiles + (n0 / WS_GEMM_COLS) * max_k;
+static inline const uint64_t *b_tile_ptr_const(
+    const uint64_t *WS_GEMM_RESTRICT b_tiles,
+    int max_k,
+    int n0,
+    int tile_cols) {
+  return b_tiles + (n0 / tile_cols) * max_k;
 }
 
 static inline __attribute__((always_inline)) void pack_a_tile_full(
@@ -122,6 +132,25 @@ static inline __attribute__((always_inline)) void pack_a_tile_edge(
   }
 }
 
+static inline __attribute__((always_inline)) void pack_a_tile_generic(
+    const uint16_t *WS_GEMM_RESTRICT A,
+    int lda,
+    int m0,
+    uint64_t *WS_GEMM_RESTRICT dst,
+    int M,
+    int K,
+    int tile_rows) {
+  for (int k = 0; k < K; k++) {
+    uint64_t packed = 0;
+    for (int r = 0; r < tile_rows; r++) {
+      const int m = m0 + r;
+      const uint16_t lane = (m < M) ? A[m * lda + k] : 0;
+      packed |= ((uint64_t)lane) << (16 * r);
+    }
+    dst[k] = packed;
+  }
+}
+
 static inline __attribute__((always_inline)) void pack_b_tile_full(
     const uint16_t *WS_GEMM_RESTRICT B,
     int ldb,
@@ -156,6 +185,26 @@ static inline __attribute__((always_inline)) void pack_b_tile_edge(
   }
 }
 
+static inline __attribute__((always_inline)) void pack_b_tile_generic(
+    const uint16_t *WS_GEMM_RESTRICT B,
+    int ldb,
+    int n0,
+    uint64_t *WS_GEMM_RESTRICT dst,
+    int N,
+    int K,
+    int tile_cols) {
+  for (int k = 0; k < K; k++) {
+    uint64_t packed = 0;
+    const uint16_t *b = &B[k * ldb];
+    for (int c = 0; c < tile_cols; c++) {
+      const int n = n0 + c;
+      const uint16_t lane = (n < N) ? b[n] : 0;
+      packed |= ((uint64_t)lane) << (16 * c);
+    }
+    dst[k] = packed;
+  }
+}
+
 static inline __attribute__((always_inline)) void store_c_tile_full(
     uint32_t *WS_GEMM_RESTRICT C,
     int ldc,
@@ -183,6 +232,27 @@ static inline __attribute__((always_inline)) void store_c_tile_full(
   c3[1] = (uint32_t)c_words[13];
   c3[2] = (uint32_t)c_words[14];
   c3[3] = (uint32_t)c_words[15];
+}
+
+static inline __attribute__((always_inline)) void store_c_tile_generic(
+    uint32_t *WS_GEMM_RESTRICT C,
+    int ldc,
+    int m0,
+    int n0,
+    const uint64_t *WS_GEMM_RESTRICT c_words,
+    int M,
+    int N,
+    int tile_rows,
+    int tile_cols) {
+  for (int i = 0; i < tile_rows; i++) {
+    for (int j = 0; j < tile_cols; j++) {
+      const int m = m0 + i;
+      const int n = n0 + j;
+      if (m < M && n < N) {
+        C[m * ldc + n] = (uint32_t)c_words[i * tile_cols + j];
+      }
+    }
+  }
 }
 
 static inline __attribute__((always_inline)) void store_c_tile_edge(
@@ -231,6 +301,27 @@ static inline __attribute__((always_inline)) void store_c_tile_full_s64(
   c3[1] = (int64_t)c_words[13];
   c3[2] = (int64_t)c_words[14];
   c3[3] = (int64_t)c_words[15];
+}
+
+static inline __attribute__((always_inline)) void store_c_tile_generic_s64(
+    int64_t *WS_GEMM_RESTRICT C,
+    int ldc,
+    int m0,
+    int n0,
+    const uint64_t *WS_GEMM_RESTRICT c_words,
+    int M,
+    int N,
+    int tile_rows,
+    int tile_cols) {
+  for (int i = 0; i < tile_rows; i++) {
+    for (int j = 0; j < tile_cols; j++) {
+      const int m = m0 + i;
+      const int n = n0 + j;
+      if (m < M && n < N) {
+        C[m * ldc + n] = (int64_t)c_words[i * tile_cols + j];
+      }
+    }
+  }
 }
 
 static inline __attribute__((always_inline)) void store_c_tile_edge_s64(
@@ -287,6 +378,30 @@ static inline __attribute__((always_inline)) void store_c_tile_full_bf16(
   c3[3] = unpack_bf16_lane(c_words[3], 3);
 }
 
+static inline __attribute__((always_inline)) void store_c_tile_generic_bf16(
+    uint16_t *WS_GEMM_RESTRICT C,
+    int ldc,
+    int m0,
+    int n0,
+    const uint64_t *WS_GEMM_RESTRICT c_words,
+    int M,
+    int N,
+    int tile_rows,
+    int tile_cols) {
+  const int out_count = tile_rows * tile_cols;
+  for (int idx = 0; idx < out_count; idx++) {
+    const int word_idx = idx / 4;
+    const int lane_idx = idx % 4;
+    const int i = idx / tile_cols;
+    const int j = idx % tile_cols;
+    const int m = m0 + i;
+    const int n = n0 + j;
+    if (m < M && n < N) {
+      C[m * ldc + n] = unpack_bf16_lane(c_words[word_idx], lane_idx);
+    }
+  }
+}
+
 static inline __attribute__((always_inline)) void store_c_tile_edge_bf16(
     uint16_t *WS_GEMM_RESTRICT C,
     int ldc,
@@ -305,6 +420,16 @@ static inline __attribute__((always_inline)) void store_c_tile_edge_bf16(
       }
     }
   }
+}
+
+static int validate_tile_shape(int tile_rows, int tile_cols) {
+  if (tile_rows <= 0 || tile_cols <= 0) {
+    return 0;
+  }
+  if (tile_rows > 4 || tile_cols > 4) {
+    return 0;
+  }
+  return 1;
 }
 
 static int validate_pack_b_dims(int ldb, int N, int K) {
@@ -343,6 +468,9 @@ static int validate_workspace_full(
   if (M > workspace->max_m || N > workspace->max_n || K > workspace->max_k) {
     return 0;
   }
+  if (!validate_tile_shape(workspace->tile_rows, workspace->tile_cols)) {
+    return 0;
+  }
   return 1;
 }
 
@@ -356,13 +484,17 @@ static int validate_workspace_run_only(
   if (M > workspace->max_m || K > workspace->max_k) {
     return 0;
   }
+  if (!validate_tile_shape(workspace->tile_rows, workspace->tile_cols)) {
+    return 0;
+  }
   return 1;
 }
 
 static int validate_packed_b(
     const ws_gemm_packed_b_t *packed_b,
     int N,
-    int K) {
+    int K,
+    int expected_tile_cols) {
   if (packed_b == 0 || packed_b->tiles == 0) {
     return 0;
   }
@@ -370,6 +502,9 @@ static int validate_packed_b(
     return 0;
   }
   if (packed_b->N > packed_b->max_n || packed_b->K > packed_b->max_k) {
+    return 0;
+  }
+  if (packed_b->tile_cols != expected_tile_cols || !validate_tile_shape(1, packed_b->tile_cols)) {
     return 0;
   }
   return 1;
@@ -390,6 +525,20 @@ int ws_gemm_pack_b_u16(
     int max_n,
     int max_k,
     uint64_t *pack_cycles) {
+  return ws_gemm_pack_b_u16_tiled(
+      B, ldb, N, K, b_tiles, max_n, max_k, WS_GEMM_COLS, pack_cycles);
+}
+
+int ws_gemm_pack_b_u16_tiled(
+    const uint16_t *WS_GEMM_RESTRICT B,
+    int ldb,
+    int N,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT b_tiles,
+    int max_n,
+    int max_k,
+    int tile_cols,
+    uint64_t *pack_cycles) {
   if (!validate_pack_b_dims(ldb, N, K)) {
     return WS_GEMM_ERR_BAD_DIMS;
   }
@@ -399,6 +548,9 @@ int ws_gemm_pack_b_u16(
   if (N > max_n || K > max_k) {
     return WS_GEMM_ERR_WORKSPACE;
   }
+  if (!validate_tile_shape(1, tile_cols)) {
+    return WS_GEMM_ERR_WORKSPACE;
+  }
 
   uint64_t start = 0;
   if (pack_cycles != 0) {
@@ -406,12 +558,12 @@ int ws_gemm_pack_b_u16(
     start = ws_read_cycles();
   }
 
-  for (int n0 = 0; n0 < N; n0 += WS_GEMM_COLS) {
-    uint64_t *b_stream = b_tile_ptr(b_tiles, max_k, n0);
-    if (n0 + WS_GEMM_COLS <= N) {
+  for (int n0 = 0; n0 < N; n0 += tile_cols) {
+    uint64_t *b_stream = b_tile_ptr(b_tiles, max_k, n0, tile_cols);
+    if (tile_cols == WS_GEMM_COLS && n0 + WS_GEMM_COLS <= N) {
       pack_b_tile_full(B, ldb, n0, b_stream, K);
     } else {
-      pack_b_tile_edge(B, ldb, n0, b_stream, N, K);
+      pack_b_tile_generic(B, ldb, n0, b_stream, N, K, tile_cols);
     }
   }
 
@@ -432,16 +584,32 @@ int ws_gemm_prepare_packed_b_u16(
     int max_k,
     ws_gemm_packed_b_t *WS_GEMM_RESTRICT packed_b,
     uint64_t *pack_cycles) {
+  return ws_gemm_prepare_packed_b_u16_tiled(
+      B, ldb, N, K, b_tiles, max_n, max_k, WS_GEMM_COLS, packed_b, pack_cycles);
+}
+
+int ws_gemm_prepare_packed_b_u16_tiled(
+    const uint16_t *WS_GEMM_RESTRICT B,
+    int ldb,
+    int N,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT b_tiles,
+    int max_n,
+    int max_k,
+    int tile_cols,
+    ws_gemm_packed_b_t *WS_GEMM_RESTRICT packed_b,
+    uint64_t *pack_cycles) {
   if (packed_b == 0) {
     return WS_GEMM_ERR_WORKSPACE;
   }
 
-  const int rc = ws_gemm_pack_b_u16(B, ldb, N, K, b_tiles, max_n, max_k, pack_cycles);
+  const int rc = ws_gemm_pack_b_u16_tiled(
+      B, ldb, N, K, b_tiles, max_n, max_k, tile_cols, pack_cycles);
   if (rc != WS_GEMM_OK) {
     return rc;
   }
 
-  *packed_b = ws_gemm_make_packed_b(b_tiles, max_n, max_k, N, K);
+  *packed_b = ws_gemm_make_packed_b_tiled(b_tiles, max_n, max_k, N, K, tile_cols);
   return WS_GEMM_OK;
 }
 
@@ -455,8 +623,23 @@ int ws_gemm_prepare_packed_b_bf16(
     int max_k,
     ws_gemm_packed_b_t *WS_GEMM_RESTRICT packed_b,
     uint64_t *pack_cycles) {
-  return ws_gemm_prepare_packed_b_u16(
-      B, ldb, N, K, b_tiles, max_n, max_k, packed_b, pack_cycles);
+  return ws_gemm_prepare_packed_b_bf16_tiled(
+      B, ldb, N, K, b_tiles, max_n, max_k, WS_GEMM_COLS, packed_b, pack_cycles);
+}
+
+int ws_gemm_prepare_packed_b_bf16_tiled(
+    const uint16_t *WS_GEMM_RESTRICT B,
+    int ldb,
+    int N,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT b_tiles,
+    int max_n,
+    int max_k,
+    int tile_cols,
+    ws_gemm_packed_b_t *WS_GEMM_RESTRICT packed_b,
+    uint64_t *pack_cycles) {
+  return ws_gemm_prepare_packed_b_u16_tiled(
+      B, ldb, N, K, b_tiles, max_n, max_k, tile_cols, packed_b, pack_cycles);
 }
 
 static void ws_gemm_pack_a_matrix(
@@ -469,16 +652,16 @@ static void ws_gemm_pack_a_matrix(
   const int measure = (stats != 0);
 
   uint64_t pack_a_start = measure ? ws_read_cycles() : 0;
-  for (int m0 = 0; m0 < M; m0 += WS_GEMM_ROWS) {
+  for (int m0 = 0; m0 < M; m0 += workspace->tile_rows) {
     uint64_t *a_stream = a_tile_ptr(workspace, m0);
-    if (m0 + WS_GEMM_ROWS <= M) {
+    if (workspace->tile_rows == WS_GEMM_ROWS && m0 + WS_GEMM_ROWS <= M) {
       const uint16_t *row0 = &A[(m0 + 0) * lda];
       const uint16_t *row1 = &A[(m0 + 1) * lda];
       const uint16_t *row2 = &A[(m0 + 2) * lda];
       const uint16_t *row3 = &A[(m0 + 3) * lda];
       pack_a_tile_full(row0, row1, row2, row3, a_stream, K);
     } else {
-      pack_a_tile_edge(A, lda, m0, a_stream, M, K);
+      pack_a_tile_generic(A, lda, m0, a_stream, M, K, workspace->tile_rows);
     }
   }
   if (measure) {
@@ -496,7 +679,7 @@ static int ws_gemm_run_preloaded_tile(
     ws_gemm_stats_t *WS_GEMM_RESTRICT stats) {
   const int measure = (stats != 0);
 
-  for (int m0 = 0; m0 < M; m0 += WS_GEMM_ROWS) {
+  for (int m0 = 0; m0 < M; m0 += workspace->tile_rows) {
     const uint64_t *a_stream = a_tile_ptr(workspace, m0);
 
     uint64_t run_start = measure ? ws_read_cycles() : 0;
@@ -508,10 +691,22 @@ static int ws_gemm_run_preloaded_tile(
     }
 
     uint64_t copy_start = measure ? ws_read_cycles() : 0;
-    if (m0 + WS_GEMM_ROWS <= M && n0 + WS_GEMM_COLS <= N) {
+    if (workspace->tile_rows == WS_GEMM_ROWS &&
+        workspace->tile_cols == WS_GEMM_COLS &&
+        m0 + WS_GEMM_ROWS <= M &&
+        n0 + WS_GEMM_COLS <= N) {
       store_c_tile_full(C, ldc, m0, n0, workspace->c_words);
     } else {
-      store_c_tile_edge(C, ldc, m0, n0, workspace->c_words, M, N);
+      store_c_tile_generic(
+          C,
+          ldc,
+          m0,
+          n0,
+          workspace->c_words,
+          M,
+          N,
+          workspace->tile_rows,
+          workspace->tile_cols);
     }
     if (measure) {
       stats->stage.copy_out_cycles += ws_read_cycles() - copy_start;
@@ -531,7 +726,7 @@ static int ws_gemm_run_preloaded_tile_s64(
     ws_gemm_stats_t *WS_GEMM_RESTRICT stats) {
   const int measure = (stats != 0);
 
-  for (int m0 = 0; m0 < M; m0 += WS_GEMM_ROWS) {
+  for (int m0 = 0; m0 < M; m0 += workspace->tile_rows) {
     const uint64_t *a_stream = a_tile_ptr(workspace, m0);
 
     uint64_t run_start = measure ? ws_read_cycles() : 0;
@@ -543,10 +738,22 @@ static int ws_gemm_run_preloaded_tile_s64(
     }
 
     uint64_t copy_start = measure ? ws_read_cycles() : 0;
-    if (m0 + WS_GEMM_ROWS <= M && n0 + WS_GEMM_COLS <= N) {
+    if (workspace->tile_rows == WS_GEMM_ROWS &&
+        workspace->tile_cols == WS_GEMM_COLS &&
+        m0 + WS_GEMM_ROWS <= M &&
+        n0 + WS_GEMM_COLS <= N) {
       store_c_tile_full_s64(C, ldc, m0, n0, workspace->c_words);
     } else {
-      store_c_tile_edge_s64(C, ldc, m0, n0, workspace->c_words, M, N);
+      store_c_tile_generic_s64(
+          C,
+          ldc,
+          m0,
+          n0,
+          workspace->c_words,
+          M,
+          N,
+          workspace->tile_rows,
+          workspace->tile_cols);
     }
     if (measure) {
       stats->stage.copy_out_cycles += ws_read_cycles() - copy_start;
@@ -566,7 +773,7 @@ static int ws_gemm_run_preloaded_tile_bf16(
     ws_gemm_stats_t *WS_GEMM_RESTRICT stats) {
   const int measure = (stats != 0);
 
-  for (int m0 = 0; m0 < M; m0 += WS_GEMM_ROWS) {
+  for (int m0 = 0; m0 < M; m0 += workspace->tile_rows) {
     const uint64_t *a_stream = a_tile_ptr(workspace, m0);
 
     uint64_t run_start = measure ? ws_read_cycles() : 0;
@@ -578,10 +785,22 @@ static int ws_gemm_run_preloaded_tile_bf16(
     }
 
     uint64_t copy_start = measure ? ws_read_cycles() : 0;
-    if (m0 + WS_GEMM_ROWS <= M && n0 + WS_GEMM_COLS <= N) {
+    if (workspace->tile_rows == WS_GEMM_ROWS &&
+        workspace->tile_cols == WS_GEMM_COLS &&
+        m0 + WS_GEMM_ROWS <= M &&
+        n0 + WS_GEMM_COLS <= N) {
       store_c_tile_full_bf16(C, ldc, m0, n0, workspace->c_words);
     } else {
-      store_c_tile_edge_bf16(C, ldc, m0, n0, workspace->c_words, M, N);
+      store_c_tile_generic_bf16(
+          C,
+          ldc,
+          m0,
+          n0,
+          workspace->c_words,
+          M,
+          N,
+          workspace->tile_rows,
+          workspace->tile_cols);
     }
     if (measure) {
       stats->stage.copy_out_cycles += ws_read_cycles() - copy_start;
@@ -606,8 +825,9 @@ static int ws_gemm_run_packed_core(
 
   ws_gemm_pack_a_matrix(A, lda, M, K, workspace, stats);
 
-  for (int n0 = 0; n0 < N; n0 += WS_GEMM_COLS) {
-    const uint64_t *b_stream = b_tile_ptr_const(b_tiles, workspace->max_k, n0);
+  for (int n0 = 0; n0 < N; n0 += workspace->tile_cols) {
+    const uint64_t *b_stream =
+        b_tile_ptr_const(b_tiles, workspace->max_k, n0, workspace->tile_cols);
 
     uint64_t preload_start = measure ? ws_read_cycles() : 0;
     if (ws_sa_preload_weights(b_stream, (uint64_t)K) != 0) {
@@ -645,8 +865,9 @@ static int ws_gemm_run_packed_core_s64(
 
   ws_gemm_pack_a_matrix(A, lda, M, K, workspace, stats);
 
-  for (int n0 = 0; n0 < N; n0 += WS_GEMM_COLS) {
-    const uint64_t *b_stream = b_tile_ptr_const(b_tiles, workspace->max_k, n0);
+  for (int n0 = 0; n0 < N; n0 += workspace->tile_cols) {
+    const uint64_t *b_stream =
+        b_tile_ptr_const(b_tiles, workspace->max_k, n0, workspace->tile_cols);
 
     uint64_t preload_start = measure ? ws_read_cycles() : 0;
     if (ws_sa_preload_weights(b_stream, (uint64_t)K) != 0) {
@@ -684,8 +905,9 @@ static int ws_gemm_run_packed_core_bf16(
 
   ws_gemm_pack_a_matrix(A, lda, M, K, workspace, stats);
 
-  for (int n0 = 0; n0 < N; n0 += WS_GEMM_COLS) {
-    const uint64_t *b_stream = b_tile_ptr_const(b_tiles, workspace->max_k, n0);
+  for (int n0 = 0; n0 < N; n0 += workspace->tile_cols) {
+    const uint64_t *b_stream =
+        b_tile_ptr_const(b_tiles, workspace->max_k, n0, workspace->tile_cols);
 
     uint64_t preload_start = measure ? ws_read_cycles() : 0;
     if (ws_sa_preload_weights(b_stream, (uint64_t)K) != 0) {
@@ -724,7 +946,8 @@ int ws_gemm_u16_prepacked_b(
     return WS_GEMM_ERR_BAD_DIMS;
   }
   if (!validate_workspace_run_only(workspace, M, K) || C == 0 ||
-      (M > 0 && K > 0 && A == 0) || !validate_packed_b(packed_b, N, K)) {
+      (M > 0 && K > 0 && A == 0) ||
+      !validate_packed_b(packed_b, N, K, workspace->tile_cols)) {
     return WS_GEMM_ERR_WORKSPACE;
   }
 
@@ -762,7 +985,8 @@ int ws_gemm_bf16_prepacked_b(
     return WS_GEMM_ERR_BAD_DIMS;
   }
   if (!validate_workspace_run_only(workspace, M, K) || C == 0 ||
-      (M > 0 && K > 0 && A == 0) || !validate_packed_b(packed_b, N, K)) {
+      (M > 0 && K > 0 && A == 0) ||
+      !validate_packed_b(packed_b, N, K, workspace->tile_cols)) {
     return WS_GEMM_ERR_WORKSPACE;
   }
 
@@ -812,8 +1036,15 @@ int ws_gemm_u16(
   }
   const uint64_t total_start = measure ? ws_read_cycles() : 0;
 
-  const int pack_rc = ws_gemm_pack_b_u16(
-      B, ldb, N, K, workspace->b_tiles, workspace->max_n, workspace->max_k,
+  const int pack_rc = ws_gemm_pack_b_u16_tiled(
+      B,
+      ldb,
+      N,
+      K,
+      workspace->b_tiles,
+      workspace->max_n,
+      workspace->max_k,
+      workspace->tile_cols,
       measure ? &stats->stage.pack_b_cycles : 0);
   if (pack_rc != WS_GEMM_OK) {
     if (measure) {
@@ -822,8 +1053,8 @@ int ws_gemm_u16(
     return pack_rc;
   }
 
-  const ws_gemm_packed_b_t packed_b =
-      ws_gemm_make_packed_b(workspace->b_tiles, workspace->max_n, workspace->max_k, N, K);
+  const ws_gemm_packed_b_t packed_b = ws_gemm_make_packed_b_tiled(
+      workspace->b_tiles, workspace->max_n, workspace->max_k, N, K, workspace->tile_cols);
   const int rc = ws_gemm_run_packed_core(
       A, lda, packed_b.tiles, M, N, K, C, ldc, workspace, stats);
 
@@ -862,8 +1093,15 @@ int ws_gemm_bf16(
   }
   const uint64_t total_start = measure ? ws_read_cycles() : 0;
 
-  const int pack_rc = ws_gemm_pack_b_u16(
-      B, ldb, N, K, workspace->b_tiles, workspace->max_n, workspace->max_k,
+  const int pack_rc = ws_gemm_pack_b_u16_tiled(
+      B,
+      ldb,
+      N,
+      K,
+      workspace->b_tiles,
+      workspace->max_n,
+      workspace->max_k,
+      workspace->tile_cols,
       measure ? &stats->stage.pack_b_cycles : 0);
   if (pack_rc != WS_GEMM_OK) {
     if (measure) {
@@ -872,8 +1110,8 @@ int ws_gemm_bf16(
     return pack_rc;
   }
 
-  const ws_gemm_packed_b_t packed_b =
-      ws_gemm_make_packed_b(workspace->b_tiles, workspace->max_n, workspace->max_k, N, K);
+  const ws_gemm_packed_b_t packed_b = ws_gemm_make_packed_b_tiled(
+      workspace->b_tiles, workspace->max_n, workspace->max_k, N, K, workspace->tile_cols);
   const int rc = ws_gemm_run_packed_core_bf16(
       A, lda, packed_b.tiles, M, N, K, C, ldc, workspace, stats);
 

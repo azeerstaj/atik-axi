@@ -16,6 +16,12 @@ This repository includes the following:
 * `workloads/bare/matmul-simple-ws.json`: boots `systolic_matmul_simple_bfloat16_weight_stationary.riscv`.
 * `workloads/bare/matmul-random-ws.json`: boots `systolic_matmul_random_bfloat16_weight_stationary.riscv`.
 * `workloads/bare/matmul-benchmark.json`: boots `systolic_matmul_benchmark_bfloat16_weight_stationary.riscv`.
+* `workloads/bare/matmul-simple-2x2.json`: boots `systolic_matmul_simple_bfloat16_weight_stationary_2x2.riscv`.
+* `workloads/bare/matmul-random-2x2.json`: boots `systolic_matmul_random_bfloat16_weight_stationary_2x2.riscv`.
+* `workloads/bare/matmul-simple-2x2-ws.json`: boots `systolic_matmul_simple_bfloat16_weight_stationary_2x2.riscv`.
+* `workloads/bare/matmul-random-2x2-ws.json`: boots `systolic_matmul_random_bfloat16_weight_stationary_2x2.riscv`.
+* `workloads/bare/matmul-benchmark-2x2.json`: boots `systolic_matmul_benchmark_bfloat16_weight_stationary_2x2.riscv`.
+* `workloads/linux/matmul-smoke-2x2.json`: boots Buildroot and runs the 2x2 GEMM smoke script.
 
 ### Bare Softmax And Attention Workloads
 * `workloads/bare/softmax-smoke.json`: boots `softmax_norm_test.riscv`.

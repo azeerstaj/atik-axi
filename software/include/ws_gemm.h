@@ -17,13 +17,18 @@ extern "C" {
 
 #define WS_GEMM_ROWS 4
 #define WS_GEMM_COLS 4
-#define WS_GEMM_C_TILE_WORDS (WS_GEMM_ROWS * WS_GEMM_COLS)
+#define WS_GEMM_C_TILE_WORDS_FOR(tile_rows, tile_cols) ((tile_rows) * (tile_cols))
+#define WS_GEMM_C_TILE_WORDS WS_GEMM_C_TILE_WORDS_FOR(WS_GEMM_ROWS, WS_GEMM_COLS)
 #define WS_GEMM_BF16_FIXED_FRAC_BITS 8
 #define WS_GEMM_BF16_ACC_FRAC_BITS (2 * WS_GEMM_BF16_FIXED_FRAC_BITS)
+#define WS_GEMM_A_TILE_WORDS_FOR(tile_rows, max_m, max_k) \
+  (((((max_m) + (tile_rows) - 1) / (tile_rows))) * (max_k))
+#define WS_GEMM_B_TILE_WORDS_FOR(tile_cols, max_n, max_k) \
+  (((((max_n) + (tile_cols) - 1) / (tile_cols))) * (max_k))
 #define WS_GEMM_A_TILE_WORDS(max_m, max_k) \
-  (((((max_m) + WS_GEMM_ROWS - 1) / WS_GEMM_ROWS)) * (max_k))
+  WS_GEMM_A_TILE_WORDS_FOR(WS_GEMM_ROWS, max_m, max_k)
 #define WS_GEMM_B_TILE_WORDS(max_n, max_k) \
-  (((((max_n) + WS_GEMM_COLS - 1) / WS_GEMM_COLS)) * (max_k))
+  WS_GEMM_B_TILE_WORDS_FOR(WS_GEMM_COLS, max_n, max_k)
 
 typedef enum {
   WS_GEMM_OK = 0,
@@ -54,7 +59,31 @@ typedef struct {
   int max_m;
   int max_n;
   int max_k;
+  int tile_rows;
+  int tile_cols;
 } ws_gemm_workspace_t;
+
+static inline ws_gemm_workspace_t ws_gemm_make_workspace_tiled(
+    uint64_t *a_tiles,
+    uint64_t *b_tiles,
+    uint64_t *c_words,
+    int max_m,
+    int max_n,
+    int max_k,
+    int tile_rows,
+    int tile_cols) {
+  ws_gemm_workspace_t workspace = {
+      .a_tiles = a_tiles,
+      .b_tiles = b_tiles,
+      .c_words = c_words,
+      .max_m = max_m,
+      .max_n = max_n,
+      .max_k = max_k,
+      .tile_rows = tile_rows,
+      .tile_cols = tile_cols,
+  };
+  return workspace;
+}
 
 static inline ws_gemm_workspace_t ws_gemm_make_workspace(
     uint64_t *a_tiles,
@@ -63,15 +92,8 @@ static inline ws_gemm_workspace_t ws_gemm_make_workspace(
     int max_m,
     int max_n,
     int max_k) {
-  ws_gemm_workspace_t workspace = {
-      .a_tiles = a_tiles,
-      .b_tiles = b_tiles,
-      .c_words = c_words,
-      .max_m = max_m,
-      .max_n = max_n,
-      .max_k = max_k,
-  };
-  return workspace;
+  return ws_gemm_make_workspace_tiled(
+      a_tiles, b_tiles, c_words, max_m, max_n, max_k, WS_GEMM_ROWS, WS_GEMM_COLS);
 }
 
 typedef struct {
@@ -80,7 +102,26 @@ typedef struct {
   int max_k;
   int N;
   int K;
+  int tile_cols;
 } ws_gemm_packed_b_t;
+
+static inline ws_gemm_packed_b_t ws_gemm_make_packed_b_tiled(
+    const uint64_t *tiles,
+    int max_n,
+    int max_k,
+    int N,
+    int K,
+    int tile_cols) {
+  ws_gemm_packed_b_t packed_b = {
+      .tiles = tiles,
+      .max_n = max_n,
+      .max_k = max_k,
+      .N = N,
+      .K = K,
+      .tile_cols = tile_cols,
+  };
+  return packed_b;
+}
 
 static inline ws_gemm_packed_b_t ws_gemm_make_packed_b(
     const uint64_t *tiles,
@@ -88,14 +129,7 @@ static inline ws_gemm_packed_b_t ws_gemm_make_packed_b(
     int max_k,
     int N,
     int K) {
-  ws_gemm_packed_b_t packed_b = {
-      .tiles = tiles,
-      .max_n = max_n,
-      .max_k = max_k,
-      .N = N,
-      .K = K,
-  };
-  return packed_b;
+  return ws_gemm_make_packed_b_tiled(tiles, max_n, max_k, N, K, WS_GEMM_COLS);
 }
 
 void ws_gemm_clear_stats(ws_gemm_stats_t *stats);
@@ -110,6 +144,17 @@ int ws_gemm_pack_b_u16(
     int max_k,
     uint64_t *pack_cycles);
 
+int ws_gemm_pack_b_u16_tiled(
+    const uint16_t *WS_GEMM_RESTRICT B,
+    int ldb,
+    int N,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT b_tiles,
+    int max_n,
+    int max_k,
+    int tile_cols,
+    uint64_t *pack_cycles);
+
 int ws_gemm_prepare_packed_b_u16(
     const uint16_t *WS_GEMM_RESTRICT B,
     int ldb,
@@ -121,6 +166,18 @@ int ws_gemm_prepare_packed_b_u16(
     ws_gemm_packed_b_t *WS_GEMM_RESTRICT packed_b,
     uint64_t *pack_cycles);
 
+int ws_gemm_prepare_packed_b_u16_tiled(
+    const uint16_t *WS_GEMM_RESTRICT B,
+    int ldb,
+    int N,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT b_tiles,
+    int max_n,
+    int max_k,
+    int tile_cols,
+    ws_gemm_packed_b_t *WS_GEMM_RESTRICT packed_b,
+    uint64_t *pack_cycles);
+
 int ws_gemm_prepare_packed_b_bf16(
     const uint16_t *WS_GEMM_RESTRICT B,
     int ldb,
@@ -129,6 +186,18 @@ int ws_gemm_prepare_packed_b_bf16(
     uint64_t *WS_GEMM_RESTRICT b_tiles,
     int max_n,
     int max_k,
+    ws_gemm_packed_b_t *WS_GEMM_RESTRICT packed_b,
+    uint64_t *pack_cycles);
+
+int ws_gemm_prepare_packed_b_bf16_tiled(
+    const uint16_t *WS_GEMM_RESTRICT B,
+    int ldb,
+    int N,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT b_tiles,
+    int max_n,
+    int max_k,
+    int tile_cols,
     ws_gemm_packed_b_t *WS_GEMM_RESTRICT packed_b,
     uint64_t *pack_cycles);
 
