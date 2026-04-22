@@ -1,3 +1,93 @@
+MatmulAccel4x4WSBF16v6:
+  PLATFORM: f2
+  TARGET_PROJECT: firesim
+  TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+  DESIGN: FireSim
+  TARGET_CONFIG: WithDefaultFireSimBridges_WithFireSimConfigTweaks_chipyard.MatmulAccel4x4WSBF16Config
+  PLATFORM_CONFIG: BaseF2Config
+  deploy_quintuplet: null
+  platform_config_args:
+      fpga_frequency: 20
+      build_strategy: TIMING
+  post_build_hook: null
+  metasim_customruntimeconfig: null
+  bit_builder_recipe: bit-builder-recipes/f2.yaml
+
+MatmulAccel4x4WSBF16v7_testchip:
+  PLATFORM: f2
+  TARGET_PROJECT: firesim
+  TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+  DESIGN: FireSim
+  TARGET_CONFIG: WithDefaultFireSimBridges_WithFireSimTestChipConfigTweaks_chipyard.MatmulAccel4x4WSBF16Config
+  PLATFORM_CONFIG: BaseF2Config
+  deploy_quintuplet: null
+  platform_config_args:
+      fpga_frequency: 20
+      build_strategy: TIMING
+  post_build_hook: null
+  metasim_customruntimeconfig: null
+  bit_builder_recipe: bit-builder-recipes/f2.yaml
+
+MatmulAccel4x4WSBF16v7_minimal_scratchpad:
+  PLATFORM: f2
+  TARGET_PROJECT: firesim
+  TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+  DESIGN: FireSim
+  TARGET_CONFIG: WithDefaultFireSimBridges_WithMinimalFireSimHighPerfConfigTweaks_chipyard.MatmulAccel4x4WSBF16Config
+  PLATFORM_CONFIG: BaseF2Config
+  deploy_quintuplet: null
+  platform_config_args:
+      fpga_frequency: 20
+      build_strategy: TIMING
+  post_build_hook: null
+  metasim_customruntimeconfig: null
+  bit_builder_recipe: bit-builder-recipes/f2.yaml
+
+MatmulAccel4x4WSBF16v7_minimal_fased:
+  PLATFORM: f2
+  TARGET_PROJECT: firesim
+  TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+  DESIGN: FireSim
+  TARGET_CONFIG: WithDefaultFireSimBridges_WithMinimalAndFASEDFireSimHighPerfConfigTweaks_chipyard.MatmulAccel4x4WSBF16Config
+  PLATFORM_CONFIG: BaseF2Config
+  deploy_quintuplet: null
+  platform_config_args:
+      fpga_frequency: 20
+      build_strategy: TIMING
+  post_build_hook: null
+  metasim_customruntimeconfig: null
+  bit_builder_recipe: bit-builder-recipes/f2.yaml
+
+MatmulAccel4x4WSBF16v7_minimal_blockdev:
+  PLATFORM: f2
+  TARGET_PROJECT: firesim
+  TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+  DESIGN: FireSim
+  TARGET_CONFIG: WithDefaultFireSimBridges_WithMinimalAndBlockDeviceFireSimHighPerfConfigTweaks_chipyard.MatmulAccel4x4WSBF16Config
+  PLATFORM_CONFIG: BaseF2Config
+  deploy_quintuplet: null
+  platform_config_args:
+      fpga_frequency: 20
+      build_strategy: TIMING
+  post_build_hook: null
+  metasim_customruntimeconfig: null
+  bit_builder_recipe: bit-builder-recipes/f2.yaml
+
+MatmulAccel4x4WSBF16v8:
+  PLATFORM: f2
+  TARGET_PROJECT: firesim
+  TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+  DESIGN: FireSim
+  TARGET_CONFIG: WithDefaultFireSimBridges_WithFireSimConfigTweaks_chipyard.MatmulAccel4x4WSBF16Config
+  PLATFORM_CONFIG: BaseF2Config
+  deploy_quintuplet: null
+  platform_config_args:
+      fpga_frequency: 5
+      build_strategy: TIMING
+  post_build_hook: null
+  metasim_customruntimeconfig: null
+  bit_builder_recipe: bit-builder-recipes/f2.yaml
+
 MatmulAccel4x4WSBF16v3:
   PLATFORM: f2
   TARGET_PROJECT: firesim
@@ -23,6 +113,22 @@ MatmulAccel4x4WSBF16v2:
   deploy_quintuplet: null
   platform_config_args:
       fpga_frequency: 10
+      build_strategy: TIMING
+  post_build_hook: null
+  metasim_customruntimeconfig: null
+  bit_builder_recipe: bit-builder-recipes/f2.yaml
+
+
+SoftmaxAccel128v3:
+  PLATFORM: f2
+  TARGET_PROJECT: firesim
+  TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+  DESIGN: FireSim
+  TARGET_CONFIG: WithDefaultFireSimBridges_WithFireSimConfigTweaks_chipyard.SoftmaxAccel128Config
+  PLATFORM_CONFIG: BaseF2Config
+  deploy_quintuplet: null
+  platform_config_args:
+      fpga_frequency: 30
       build_strategy: TIMING
   post_build_hook: null
   metasim_customruntimeconfig: null

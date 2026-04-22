@@ -1,3 +1,25 @@
+MatmulAccel4x4WSBF16v7_minimal_scratchpad:
+    agfi: agfi-0bcd625208f76e9b3
+    deploy_quintuplet_override: null
+    custom_runtime_config: null
+
+# 20 hz
+MatmulAccel4x4WSBF16v6:
+    agfi: agfi-093565e5940bf49e5
+    deploy_quintuplet_override: null
+    custom_runtime_config: null
+
+# 10 hz
+MatmulAccel4x4WSBF16v5:
+    agfi: agfi-04540d05d225004e0
+    deploy_quintuplet_override: null
+    custom_runtime_config: null
+
+MatmulAccel4x4WSBF16v4:
+    agfi: agfi-02327d1676b33ad91                     
+    deploy_quintuplet_override: null                 
+    custom_runtime_config: null
+
 MatmulAccel4x4WSBF16v3:
     agfi: agfi-0dfc49bbb6666912a
     deploy_quintuplet_override: null

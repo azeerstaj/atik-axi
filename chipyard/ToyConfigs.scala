@@ -73,3 +73,11 @@ class MatmulAccel4x4WSBF16256Config extends Config(
     new chipyard.config.WithSystemBusWidth(256) ++
     new chipyard.config.AbstractConfig
 )
+
+
+class MatmulAccel2x2WSBF16Config extends Config(
+  new MatmulAccel2x2WSBF16 ++
+    new freechips.rocketchip.rocket.WithNHugeCores(1) ++
+    new chipyard.config.WithSystemBusWidth(128) ++
+    new chipyard.config.AbstractConfig
+)
