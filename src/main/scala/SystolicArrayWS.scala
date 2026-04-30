@@ -319,6 +319,8 @@ class SystolicArrayWSImpl(
   // Selects BF16 output packing.
   // When true, accumulated outputs are converted back to BF16 and several outputs can share one xLen word.
   private val useBFloat16Output = outer.useBFloat16Output // True
+  // Debug knob: disable speculative A-chunk prefetch so multi-chunk runs use the simpler synchronous A-load path.
+  private val enableAPrefetch = outer.enableAPrefetch
   // Fractional-bit count used by the fixed-point representation in the BF16-input path.
   private val fixedPointFracBits = outer.fixedPointFracBits // 12
   // Maximum K processed by one mesh load/feed/capture chunk.
@@ -956,7 +958,8 @@ class SystolicArrayWSImpl(
 
   val remainingAfterCurrent = kRemaining - chunkK
   val canStartAPrefetch =
-    (state === s_load_weights || state === s_feed_rows || state === s_wait_chunk_out) &&
+    enableAPrefetch.B &&
+      (state === s_load_weights || state === s_feed_rows || state === s_wait_chunk_out) &&
       (remainingAfterCurrent =/= 0.U) &&
       !prefetchedValid &&
       (prefetchState === pf_idle)
@@ -1127,7 +1130,8 @@ class SystolicArrayWSImpl(
   when(state === s_wait_chunk_out) {
     when(captureRowIdx === nRows.U) {
       val remAfter = kRemaining - chunkK
-      when(remAfter === 0.U || prefetchedValid) {
+      val prefetchReadyOrUnused = !enableAPrefetch.B || prefetchedValid
+      when(remAfter === 0.U || prefetchReadyOrUnused) {
         kRemaining := remAfter
         kBaseIdx := kBaseIdx + chunkK
         state := s_prep_chunk
@@ -1236,13 +1240,39 @@ class SystolicArrayWSRoCC(
   val useBFloat16Output: Boolean = false,
   val fixedPointFracBits: Int = 8,
   val accumBits: Int = 32,
-  val numTLSourceIds: Int = 4
+  val numTLSourceIds: Int = 4,
+  val enableAPrefetch: Boolean = true
 )(implicit p: Parameters) extends LazyRoCC(opcodes) {
   override lazy val module = new SystolicArrayWSImpl(this)
   override val atlNode = TLClientNode(
     Seq(TLMasterPortParameters.v1(Seq(TLMasterParameters.v1(
-      name = "SystolicArrayWSRoCC",
+      name = if (enableAPrefetch) "SystolicArrayWSRoCC" else "SystolicArrayWSNoAPrefetchRoCC",
       sourceId = IdRange(0, numTLSourceIds)
     ))))
   )
 }
+
+class SystolicArrayWSNoAPrefetchRoCC(
+  opcodes: OpcodeSet,
+  precision: Int = 16,
+  nRows: Int = 4,
+  nCols: Int = 4,
+  maxK: Int = 64,
+  useBFloat16Input: Boolean = false,
+  useBFloat16Output: Boolean = false,
+  fixedPointFracBits: Int = 8,
+  accumBits: Int = 32,
+  numTLSourceIds: Int = 4
+)(implicit p: Parameters) extends SystolicArrayWSRoCC(
+  opcodes = opcodes,
+  precision = precision,
+  nRows = nRows,
+  nCols = nCols,
+  maxK = maxK,
+  useBFloat16Input = useBFloat16Input,
+  useBFloat16Output = useBFloat16Output,
+  fixedPointFracBits = fixedPointFracBits,
+  accumBits = accumBits,
+  numTLSourceIds = numTLSourceIds,
+  enableAPrefetch = false
+)
