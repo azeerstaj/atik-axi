@@ -21,7 +21,7 @@ MatmulAccel4x4WSBF16v4:
     custom_runtime_config: null
 
 MatmulAccel4x4WSBF16v3:
-    agfi: agfi-0dfc49bbb6666912a
+    agfi: agfi-069f4eb7b1811ea37
     deploy_quintuplet_override: null
     custom_runtime_config: null
 

@@ -33,6 +33,26 @@ class AttnAccel4x4 extends Config((site, here, up) => {
   )
 })
 
+class FusedAttnAccel4x4 extends Config((site, here, up) => {
+  case BuildRoCC => List(
+    (p: Parameters) => {
+      val attn = LazyModule(new FusedAttentionWSRoCC(
+        precision = 16,
+        nRows = 4,
+        nCols = 4,
+        maxK = 128,
+        fixedPointFracBits = 8,
+        accumBits = 32,
+        softmaxIntPrecision = 12,
+        softmaxFracPrecision = 20,
+        numTLSourceIds = 2,
+        opcodes = OpcodeSet.custom0
+      )(p))
+      attn
+    }
+  )
+})
+
 
 class SoftmaxAccel extends Config((site, here, up) => {
   case BuildRoCC => List(

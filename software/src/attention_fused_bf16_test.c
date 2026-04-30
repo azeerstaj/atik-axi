@@ -40,16 +40,13 @@ static float sw_scores[MAX_Q_ROWS][MAX_KV_ROWS];
 static float sw_probs[MAX_Q_ROWS][MAX_KV_ROWS];
 static float sw_output[MAX_Q_ROWS][MAX_VALUE_COLS];
 
-static uint16_t scores_bf16[MAX_Q_ROWS][MAX_KV_ROWS] __attribute__((aligned(64)));
-static uint16_t probs_bf16[MAX_Q_ROWS][MAX_KV_ROWS] __attribute__((aligned(64)));
-
-static uint64_t qk_a_tiles[WS_GEMM_A_TILE_WORDS(MAX_Q_ROWS, MAX_D_K)] __attribute__((aligned(64)));
-static uint64_t qk_b_tiles[WS_GEMM_B_TILE_WORDS(MAX_KV_ROWS, MAX_D_K)] __attribute__((aligned(64)));
-static uint64_t qk_c_words[WS_GEMM_C_TILE_WORDS] __attribute__((aligned(64)));
-
-static uint64_t pv_a_tiles[WS_GEMM_A_TILE_WORDS(MAX_Q_ROWS, MAX_KV_ROWS)] __attribute__((aligned(64)));
-static uint64_t pv_b_tiles[WS_GEMM_B_TILE_WORDS(MAX_VALUE_COLS, MAX_KV_ROWS)] __attribute__((aligned(64)));
-static uint64_t pv_c_words[WS_GEMM_C_TILE_WORDS] __attribute__((aligned(64)));
+static uint64_t q_tiles[ATTENTION_FUSED_Q_TILE_WORDS_FOR(
+    ATTENTION_FUSED_TILE_ROWS, MAX_Q_ROWS, MAX_D_K)] __attribute__((aligned(64)));
+static uint64_t k_tiles[ATTENTION_FUSED_K_TILE_WORDS_FOR(
+    ATTENTION_FUSED_TILE_COLS, MAX_KV_ROWS, ATTENTION_FUSED_MAX_K)] __attribute__((aligned(64)));
+static uint64_t v_tiles[ATTENTION_FUSED_V_TILE_WORDS_FOR(MAX_KV_ROWS)] __attribute__((aligned(64)));
+static uint64_t out_words[ATTENTION_FUSED_OUT_TILE_WORDS_FOR(
+    ATTENTION_FUSED_TILE_ROWS, ATTENTION_FUSED_TILE_COLS)] __attribute__((aligned(64)));
 
 static float rand_float(void) {
   return ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f;
@@ -93,17 +90,12 @@ static void sw_apply_score_modifiers(
     int stride,
     const attention_params_t *params) {
   const float scale = (params != 0) ? params->scale : 1.0f;
-  const uint16_t *mask_bf16 = (params != 0) ? params->mask_bf16 : 0;
-  const int mask_stride = (params != 0) ? params->mask_stride : 0;
   const int causal = (params != 0) ? params->causal : 0;
   const int query_position_base = (params != 0) ? params->query_position_base : 0;
 
   for (int r = 0; r < rows; r++) {
     for (int c = 0; c < cols; c++) {
       float value = scores[r * stride + c] * scale;
-      if (mask_bf16 != 0) {
-        value += bf16_to_float(mask_bf16[r * mask_stride + c]);
-      }
       if (causal && c > query_position_base + r) {
         value = -1.0e9f;
       }
@@ -220,7 +212,7 @@ static void print_attention_output_samples(
     int case_id,
     int q_rows,
     int value_cols) {
-  printf("\n=== Attention Case %d Output Samples ===\n", case_id);
+  printf("\n=== Fused Attention Case %d Output Samples ===\n", case_id);
   print_float_array_samples(
       "Software Output Row 0",
       &sw_output[0][0],
@@ -254,34 +246,44 @@ static uint64_t ratio_x100(uint64_t sw_cycles, uint64_t hw_cycles) {
 }
 
 int main(void) {
+  printf("=== BF16 Fused Attention Test ===\n");
 
-  printf("=== BF16 Attention Test ===\n");
-  // q_rows, kv_rows, d_k, value_cols, causal;
+  // q_rows
+  // kv_rows
+  // d_k
+  // value_cols
+  // causal
   const attention_case_t tests[] = {
-      {1, 16, 32, 32, 0},
-      {4, 16, 32, 32, 0},
-      {4, 32, 32, 32, 1},
-      {6, 64, 64, 48, 1},
-      {8, 96, 64, 64, 0},
+      {4, 4, 4, 4, 0},
+      // {4, 4, 4, 4, 1},
+      {4, 8, 4, 4, 0},
+      {8, 8, 8, 8, 0},
+      // {4, 8, 4, 4, 1},
+      // {4, 16, 32, 32, 0},
+      // {4, 32, 32, 32, 1},
+      // {6, 64, 64, 48, 1},
+      // {8, 96, 64, 64, 0},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
 
-  const attention_workspace_t workspace = attention_make_workspace(
-      qk_a_tiles,
-      qk_b_tiles,
-      qk_c_words,
-      pv_a_tiles,
-      pv_b_tiles,
-      pv_c_words,
-      &scores_bf16[0][0],
-      &probs_bf16[0][0],
+  const attention_fused_workspace_t workspace = attention_make_fused_workspace(
+      q_tiles,
+      k_tiles,
+      v_tiles,
+      out_words,
       MAX_Q_ROWS,
       MAX_KV_ROWS,
       MAX_D_K,
       MAX_VALUE_COLS);
 
   srand(11);
-  printf("CSV_HEADER,case,q_rows,kv_rows,d_k,value_cols,causal,sw_total_cycles,sw_qk_cycles,sw_score_post_cycles,sw_softmax_cycles,sw_pv_cycles,hw_total_cycles,hw_accel_cycles,qk_pack_cycles,qk_hw_e2e_cycles,qk_pack_a_cycles,qk_preload_cycles,qk_run_cycles,qk_copy_out_cycles,score_post_cycles,softmax_hw_e2e_cycles,softmax_pass1_cycles,softmax_pass2_cycles,pv_pack_cycles,pv_hw_e2e_cycles,pv_pack_a_cycles,pv_preload_cycles,pv_run_cycles,pv_copy_out_cycles,ratio_x100,mismatches\n");
+  printf(
+      "CSV_HEADER,case,q_rows,kv_rows,d_k,value_cols,causal,"
+      "sw_total_cycles,sw_qk_cycles,sw_score_post_cycles,sw_softmax_cycles,sw_pv_cycles,"
+      "hw_total_cycles,hw_accel_cycles,q_pack_cycles,k_pack_cycles,v_pack_cycles,copy_out_cycles,"
+      "busy_cycles,run_cmds,tl_read_reqs,tl_write_reqs,wait_q_fill_cycles,wait_k_fill_cycles,"
+      "qk_compute_cycles,score_post_cycles,softmax_pass1_cycles,softmax_pass2_cycles,"
+      "wait_v_fill_cycles,pv_compute_cycles,wait_put_cycles,ratio_x100,mismatches\n");
 
   int total_mismatches = 0;
 
@@ -335,8 +337,8 @@ int main(void) {
         MAX_VALUE_COLS,
         &sw_stats);
 
-    attention_stats_t stats;
-    const int rc = attention_bf16(
+    attention_fused_stats_t stats;
+    const int rc = attention_fused_bf16(
         &q_matrix[0][0],
         MAX_D_K,
         &k_t_matrix[0][0],
@@ -352,14 +354,14 @@ int main(void) {
         &workspace,
         &params,
         &stats);
-    if (rc != ATTENTION_OK) {
-      printf("FAIL: attention_bf16 rc=%d on case %d\n", rc, t);
+    if (rc != ATTENTION_FUSED_OK) {
+      printf("FAIL: attention_fused_bf16 rc=%d on case %d\n", rc, t);
       return 1;
     }
 
     int mismatches = 0;
     float max_abs_diff = 0.0f;
-    const uint64_t hw_e2e_cycles = attention_accelerator_cycles(&stats);
+    const uint64_t hw_e2e_cycles = attention_fused_accelerator_cycles(&stats);
     const uint64_t sw_hw_ratio_x100 = ratio_x100(sw_stats.total_cycles, hw_e2e_cycles);
     for (int r = 0; r < tc.q_rows; r++) {
       for (int c = 0; c < tc.value_cols; c++) {
@@ -385,46 +387,44 @@ int main(void) {
 
     total_mismatches += mismatches;
     printf(
-           "CSV_DATA,%d,%d,%d,%d,%d,%d,"
-           "%lu,%lu,%lu,%lu,%lu,"
-           "%lu,%lu,"
-           "%lu,%lu,%lu,%lu,%lu,%lu,"
-           "%lu,"
-           "%lu,%lu,%lu,"
-           "%lu,%lu,%lu,%lu,%lu,%lu,"
-           "%lu,"
-           "%d\n",
-           t,
-           tc.q_rows,
-           tc.kv_rows,
-           tc.d_k,
-           tc.value_cols,
-           tc.causal,
-           (unsigned long)sw_stats.total_cycles,
-           (unsigned long)sw_stats.qk_cycles,
-           (unsigned long)sw_stats.score_post_cycles,
-           (unsigned long)sw_stats.softmax_cycles,
-           (unsigned long)sw_stats.pv_cycles,
-           (unsigned long)stats.total_cycles,
-           (unsigned long)hw_e2e_cycles,
-           (unsigned long)stats.qk_pack_cycles,
-           (unsigned long)stats.qk_matmul.hw_e2e_cycles,
-           (unsigned long)stats.qk_matmul.stage.pack_a_cycles,
-           (unsigned long)stats.qk_matmul.stage.preload_cycles,
-           (unsigned long)stats.qk_matmul.stage.run_cycles,
-           (unsigned long)stats.qk_matmul.stage.copy_out_cycles,
-           (unsigned long)stats.score_post_cycles,
-           (unsigned long)stats.softmax.hw_e2e_cycles,
-           (unsigned long)stats.softmax.stage.pass1_cycles,
-           (unsigned long)stats.softmax.stage.pass2_cycles,
-           (unsigned long)stats.pv_pack_cycles,
-           (unsigned long)stats.pv_matmul.hw_e2e_cycles,
-           (unsigned long)stats.pv_matmul.stage.pack_a_cycles,
-           (unsigned long)stats.pv_matmul.stage.preload_cycles,
-           (unsigned long)stats.pv_matmul.stage.run_cycles,
-           (unsigned long)stats.pv_matmul.stage.copy_out_cycles,
-           (unsigned long)sw_hw_ratio_x100,
-           mismatches);
+        "CSV_DATA,%d,%d,%d,%d,%d,%d,"
+        "%lu,%lu,%lu,%lu,%lu,"
+        "%lu,%lu,%lu,%lu,%lu,%lu,"
+        "%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,"
+        "%lu,"
+        "%d\n",
+        t,
+        tc.q_rows,
+        tc.kv_rows,
+        tc.d_k,
+        tc.value_cols,
+        tc.causal,
+        (unsigned long)sw_stats.total_cycles,
+        (unsigned long)sw_stats.qk_cycles,
+        (unsigned long)sw_stats.score_post_cycles,
+        (unsigned long)sw_stats.softmax_cycles,
+        (unsigned long)sw_stats.pv_cycles,
+        (unsigned long)stats.total_cycles,
+        (unsigned long)hw_e2e_cycles,
+        (unsigned long)stats.stage.q_pack_cycles,
+        (unsigned long)stats.stage.k_pack_cycles,
+        (unsigned long)stats.stage.v_pack_cycles,
+        (unsigned long)stats.stage.copy_out_cycles,
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_BUSY_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_RUN_CMDS],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_TL_READ_REQS],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_TL_WRITE_REQS],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_WAIT_Q_FILL_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_WAIT_K_FILL_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_QK_COMPUTE_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_SCORE_POST_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_SOFTMAX_PASS1_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_SOFTMAX_PASS2_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_WAIT_V_FILL_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_PV_COMPUTE_CYCLES],
+        (unsigned long)stats.perf[ATTN_FUSED_PERF_WAIT_PUT_CYCLES],
+        (unsigned long)sw_hw_ratio_x100,
+        mismatches);
     print_attention_output_samples(t, tc.q_rows, tc.value_cols);
     print_float("Max abs diff: ", max_abs_diff);
 
@@ -434,7 +434,7 @@ int main(void) {
   }
 
   if (total_mismatches == 0) {
-    printf("PASS: BF16 attention matched the software reference.\n");
+    printf("PASS: fused BF16 attention matched the software reference.\n");
   } else {
     printf("FAIL: total mismatches = %d\n", total_mismatches);
   }

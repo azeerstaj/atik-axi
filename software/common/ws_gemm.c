@@ -669,6 +669,88 @@ static void ws_gemm_pack_a_matrix(
   }
 }
 
+int ws_gemm_pack_a_u16(
+    const uint16_t *WS_GEMM_RESTRICT A,
+    int lda,
+    int M,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT a_tiles,
+    int max_m,
+    int max_k,
+    uint64_t *pack_cycles) {
+  return ws_gemm_pack_a_u16_tiled(
+      A, lda, M, K, a_tiles, max_m, max_k, WS_GEMM_ROWS, pack_cycles);
+}
+
+int ws_gemm_pack_a_u16_tiled(
+    const uint16_t *WS_GEMM_RESTRICT A,
+    int lda,
+    int M,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT a_tiles,
+    int max_m,
+    int max_k,
+    int tile_rows,
+    uint64_t *pack_cycles) {
+  if (M < 0 || K < 0 || lda < K) {
+    return WS_GEMM_ERR_BAD_DIMS;
+  }
+  if (A == 0 || a_tiles == 0) {
+    return WS_GEMM_ERR_WORKSPACE;
+  }
+  if (M > max_m || K > max_k || !validate_tile_shape(tile_rows, 1)) {
+    return WS_GEMM_ERR_WORKSPACE;
+  }
+
+  ws_gemm_workspace_t workspace = {
+      .a_tiles = a_tiles,
+      .b_tiles = 0,
+      .c_words = 0,
+      .max_m = max_m,
+      .max_n = 0,
+      .max_k = max_k,
+      .tile_rows = tile_rows,
+      .tile_cols = 1,
+  };
+  ws_gemm_stats_t stats;
+  ws_gemm_stats_t *stats_ptr = (pack_cycles != 0) ? &stats : 0;
+  if (stats_ptr != 0) {
+    memset(stats_ptr, 0, sizeof(*stats_ptr));
+  }
+  ws_gemm_pack_a_matrix(A, lda, M, K, &workspace, stats_ptr);
+  if (pack_cycles != 0) {
+    *pack_cycles = stats.stage.pack_a_cycles;
+  }
+  return WS_GEMM_OK;
+}
+
+int ws_gemm_pack_a_bf16(
+    const uint16_t *WS_GEMM_RESTRICT A,
+    int lda,
+    int M,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT a_tiles,
+    int max_m,
+    int max_k,
+    uint64_t *pack_cycles) {
+  return ws_gemm_pack_a_u16(
+      A, lda, M, K, a_tiles, max_m, max_k, pack_cycles);
+}
+
+int ws_gemm_pack_a_bf16_tiled(
+    const uint16_t *WS_GEMM_RESTRICT A,
+    int lda,
+    int M,
+    int K,
+    uint64_t *WS_GEMM_RESTRICT a_tiles,
+    int max_m,
+    int max_k,
+    int tile_rows,
+    uint64_t *pack_cycles) {
+  return ws_gemm_pack_a_u16_tiled(
+      A, lda, M, K, a_tiles, max_m, max_k, tile_rows, pack_cycles);
+}
+
 static int ws_gemm_run_preloaded_tile(
     int M,
     int N,
