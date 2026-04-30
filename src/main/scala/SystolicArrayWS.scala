@@ -321,6 +321,8 @@ class SystolicArrayWSImpl(
   private val useBFloat16Output = outer.useBFloat16Output // True
   // Debug knob: disable speculative A-chunk prefetch so multi-chunk runs use the simpler synchronous A-load path.
   private val enableAPrefetch = outer.enableAPrefetch
+  // Debug knob: insert zero-input cycles between K chunks to drain skew/PE pipeline residue.
+  private val interChunkDrainCycles = outer.interChunkDrainCycles
   // Fractional-bit count used by the fixed-point representation in the BF16-input path.
   private val fixedPointFracBits = outer.fixedPointFracBits // 12
   // Maximum K processed by one mesh load/feed/capture chunk.
@@ -483,7 +485,7 @@ class SystolicArrayWSImpl(
 
   // Main control FSM for the RoCC wrapper:
   // fill B cache, prepare/fill A chunks(inputs), load weights, feed the core, optionally quantize outputs, write results, respond.
-  val s_idle :: s_req_fill_b_cache :: s_wait_fill_b_cache :: s_prep_chunk :: s_req_fill_a :: s_wait_fill_a :: s_load_weights :: s_feed_rows :: s_wait_chunk_out :: s_quantize_out :: s_req_put :: s_wait_put :: s_resp :: Nil = Enum(13)
+  val s_idle :: s_req_fill_b_cache :: s_wait_fill_b_cache :: s_prep_chunk :: s_req_fill_a :: s_wait_fill_a :: s_load_weights :: s_feed_rows :: s_wait_chunk_out :: s_drain_core :: s_quantize_out :: s_req_put :: s_wait_put :: s_resp :: Nil = Enum(14)
   // Current FSM state.
   val state = RegInit(s_idle)
 
@@ -533,6 +535,7 @@ class SystolicArrayWSImpl(
   // Output-word writeback index.
   // Indexes output words, not scalar output elements.
   val outIdx = RegInit(0.U(outIdxWidth.W))
+  val drainCycleIdx = RegInit(0.U(log2Ceil(interChunkDrainCycles.max(1) + 1).W))
   // Next bCacheBuf slot to be committed by the serialized B-fill path.
   val bCacheFillIdx = RegInit(0.U(cacheIdxWidth.W))
   // Next packed-B word index to issue as a TileLink request.
@@ -830,6 +833,7 @@ class SystolicArrayWSImpl(
       feedRowIdx := 0.U
       captureRowIdx := 0.U
       outIdx := 0.U
+      drainCycleIdx := 0.U
       bCacheFillIdx := 0.U
       bIssueIdx := 0.U
       activeABufSel := 0.U
@@ -877,6 +881,7 @@ class SystolicArrayWSImpl(
       feedRowIdx := 0.U
       captureRowIdx := 0.U
       outIdx := 0.U
+      drainCycleIdx := 0.U
       bCacheFillIdx := 0.U
       bIssueIdx := 0.U
       activeABufSel := 0.U
@@ -949,7 +954,7 @@ class SystolicArrayWSImpl(
     }
   }
 
-  when(core.io.outValid) {
+  when(core.io.outValid && captureRowIdx < nRows.U) {
     for (c <- 0 until nCols) {
       accumTile(captureRowIdx)(c) := accumTile(captureRowIdx)(c) + core.io.outVec(c)
     }
@@ -1134,8 +1139,25 @@ class SystolicArrayWSImpl(
       when(remAfter === 0.U || prefetchReadyOrUnused) {
         kRemaining := remAfter
         kBaseIdx := kBaseIdx + chunkK
-        state := s_prep_chunk
+        if (interChunkDrainCycles > 0) {
+          when(remAfter =/= 0.U) {
+            drainCycleIdx := (interChunkDrainCycles - 1).U
+            state := s_drain_core
+          }.otherwise {
+            state := s_prep_chunk
+          }
+        } else {
+          state := s_prep_chunk
+        }
       }
+    }
+  }
+
+  when(state === s_drain_core) {
+    when(drainCycleIdx === 0.U) {
+      state := s_prep_chunk
+    }.otherwise {
+      drainCycleIdx := drainCycleIdx - 1.U
     }
   }
 
@@ -1241,12 +1263,16 @@ class SystolicArrayWSRoCC(
   val fixedPointFracBits: Int = 8,
   val accumBits: Int = 32,
   val numTLSourceIds: Int = 4,
-  val enableAPrefetch: Boolean = true
+  val enableAPrefetch: Boolean = true,
+  val interChunkDrainCycles: Int = 0
 )(implicit p: Parameters) extends LazyRoCC(opcodes) {
   override lazy val module = new SystolicArrayWSImpl(this)
   override val atlNode = TLClientNode(
     Seq(TLMasterPortParameters.v1(Seq(TLMasterParameters.v1(
-      name = if (enableAPrefetch) "SystolicArrayWSRoCC" else "SystolicArrayWSNoAPrefetchRoCC",
+      name =
+        if (interChunkDrainCycles > 0) "SystolicArrayWSNoAPrefetchDrainRoCC"
+        else if (enableAPrefetch) "SystolicArrayWSRoCC"
+        else "SystolicArrayWSNoAPrefetchRoCC",
       sourceId = IdRange(0, numTLSourceIds)
     ))))
   )
@@ -1274,5 +1300,6 @@ class SystolicArrayWSNoAPrefetchRoCC(
   fixedPointFracBits = fixedPointFracBits,
   accumBits = accumBits,
   numTLSourceIds = numTLSourceIds,
-  enableAPrefetch = false
+  enableAPrefetch = false,
+  interChunkDrainCycles = 7
 )
