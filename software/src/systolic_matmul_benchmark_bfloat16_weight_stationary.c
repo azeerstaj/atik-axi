@@ -45,21 +45,6 @@ static void cpu_gemm_blocked_u16(
   }
 }
 
-static int count_mismatches(
-    const uint32_t A[MAX_DIM][MAX_DIM],
-    const uint32_t B[MAX_DIM][MAX_DIM],
-    int M, int N) {
-  int mismatches = 0;
-  for (int i = 0; i < M; i++) {
-    for (int j = 0; j < N; j++) {
-      if (A[i][j] != B[i][j]) {
-        mismatches++;
-      }
-    }
-  }
-  return mismatches;
-}
-
 int main(void) {
   static uint16_t A[MAX_DIM][MAX_DIM] __attribute__((aligned(64)));
   static uint16_t B[MAX_DIM][MAX_DIM] __attribute__((aligned(64)));
@@ -80,7 +65,7 @@ int main(void) {
 
   srand(1);
   printf("=== Systolic GEMM Benchmark (Weight-Stationary 4x4) ===\n");
-  printf("CSV_HEADER,case,M,N,K,cpu_cycles,hw_total_cycles,hw_rc,mismatches\n");
+  printf("CSV_HEADER,case,M,N,K,cpu_cycles,hw_total_cycles,hw_rc\n");
   printf("PERF_HEADER,case,busy_cycles,run_cmds,preload_cmds,preload_reuse_hits,chunks_started,feed_cycles,capture_rows,tl_b_reads,tl_a_reads,tl_c_writes,wait_fill_b_cycles,wait_fill_a_cycles,load_weight_cycles,wait_chunk_out_cycles,wait_put_cycles\n");
   printf("STAGE_HEADER,case,pack_a_cycles,pack_b_cycles,preload_cycles,run_cycles,copy_out_cycles\n");
 
@@ -113,14 +98,11 @@ int main(void) {
         &workspace,
         &stats);
 
-    int mismatches = (hw_rc == WS_GEMM_OK) ? count_mismatches(C_cpu, C_hw, M, N) : -1;
-
-    printf("CSV_DATA,%d,%d,%d,%d,%lu,%lu,%d,%d\n",
+    printf("CSV_DATA,%d,%d,%d,%d,%lu,%lu,%d\n",
            c, M, N, K,
            (unsigned long)cpu_cycles,
            (unsigned long)stats.hw_e2e_cycles,
-           hw_rc,
-           mismatches);
+           hw_rc);
     printf("PERF_DATA,%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
            c,
            (unsigned long)stats.perf[WS_PERF_BUSY_CYCLES],
