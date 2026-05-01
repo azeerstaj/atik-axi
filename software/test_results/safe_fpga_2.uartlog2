@@ -1,0 +1,13 @@
+=== Systolic GEMM Benchmark (Weight-Stationary 4x4) ===
+CSV_HEADER,case,M,N,K,cpu_cycles,hw_total_cycles,hw_rc
+PERF_HEADER,case,busy_cycles,run_cmds,preload_cmds,preload_reuse_hits,chunks_started,feed_cycles,capture_rows,tl_b_reads,tl_a_reads,tl_c_writes,wait_fill_b_cycles,wait_fill_a_cycles,load_weight_cycles,wait_chunk_out_cycles,wait_put_cycles
+STAGE_HEADER,case,pack_a_cycles,pack_b_cycles,preload_cycles,run_cycles,copy_out_cycles
+CSV_DATA,0,128,128,128,25566304,1250762,0
+PERF_DATA,0,687426,1024,32,1024,1024,131072,4096,2048,65536,2048,27372,439862,0,131072,18464
+STAGE_DATA,0,118278,111693,29804,671322,281392
+CSV_DATA,1,256,256,256,202830968,8329435,0
+PERF_DATA,1,5764779,4096,64,4096,4096,1048576,16384,8192,524288,8192,125106,3972601,0,1048576,73728
+STAGE_DATA,1,499621,554822,134066,5684769,1305052
+CSV_DATA,2,512,512,512,1615415051,6128512,3
+PERF_DATA,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+STAGE_DATA,2,1991864,4135927,0,0,0
