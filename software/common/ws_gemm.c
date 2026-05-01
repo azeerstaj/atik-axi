@@ -1024,6 +1024,8 @@ int ws_gemm_u16_prepacked_b(
   const int N = packed_b != 0 ? packed_b->N : 0;
   const int K = packed_b != 0 ? packed_b->K : 0;
 
+  ws_gemm_clear_stats(stats);
+
   if (!validate_run_dims(lda, ldc, M, N, K)) {
     return WS_GEMM_ERR_BAD_DIMS;
   }
@@ -1032,8 +1034,6 @@ int ws_gemm_u16_prepacked_b(
       !validate_packed_b(packed_b, N, K, workspace->tile_cols)) {
     return WS_GEMM_ERR_WORKSPACE;
   }
-
-  ws_gemm_clear_stats(stats);
 
   const int measure = (stats != 0);
   if (measure) {
@@ -1063,6 +1063,8 @@ int ws_gemm_bf16_prepacked_b(
   const int N = packed_b != 0 ? packed_b->N : 0;
   const int K = packed_b != 0 ? packed_b->K : 0;
 
+  ws_gemm_clear_stats(stats);
+
   if (!validate_run_dims(lda, ldc, M, N, K)) {
     return WS_GEMM_ERR_BAD_DIMS;
   }
@@ -1071,8 +1073,6 @@ int ws_gemm_bf16_prepacked_b(
       !validate_packed_b(packed_b, N, K, workspace->tile_cols)) {
     return WS_GEMM_ERR_WORKSPACE;
   }
-
-  ws_gemm_clear_stats(stats);
 
   const int measure = (stats != 0);
   if (measure) {
@@ -1102,6 +1102,8 @@ int ws_gemm_u16(
     int K,
     const ws_gemm_workspace_t *WS_GEMM_RESTRICT workspace,
     ws_gemm_stats_t *WS_GEMM_RESTRICT stats) {
+  ws_gemm_clear_stats(stats);
+
   if (!validate_full_dims(lda, ldb, ldc, M, N, K)) {
     return WS_GEMM_ERR_BAD_DIMS;
   }
@@ -1109,8 +1111,6 @@ int ws_gemm_u16(
       (M > 0 && K > 0 && A == 0) || (K > 0 && N > 0 && B == 0)) {
     return WS_GEMM_ERR_WORKSPACE;
   }
-
-  ws_gemm_clear_stats(stats);
 
   const int measure = (stats != 0);
   if (measure) {
@@ -1159,6 +1159,8 @@ int ws_gemm_bf16(
     int K,
     const ws_gemm_workspace_t *WS_GEMM_RESTRICT workspace,
     ws_gemm_stats_t *WS_GEMM_RESTRICT stats) {
+  ws_gemm_clear_stats(stats);
+
   if (!validate_full_dims(lda, ldb, ldc, M, N, K)) {
     return WS_GEMM_ERR_BAD_DIMS;
   }
@@ -1166,8 +1168,6 @@ int ws_gemm_bf16(
       (M > 0 && K > 0 && A == 0) || (K > 0 && N > 0 && B == 0)) {
     return WS_GEMM_ERR_WORKSPACE;
   }
-
-  ws_gemm_clear_stats(stats);
 
   const int measure = (stats != 0);
   if (measure) {

@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define MAX_M 16
-#define MAX_N 16
+#define MAX_M 32
+#define MAX_N 32
 #define MAX_K 100
 
 typedef struct {
@@ -98,6 +98,8 @@ int main(void) {
       {4, 4, 100},
       {8, 8, 100},
       {16, 16, 100},
+      {32, 32, 32},
+      {32, 32, 100},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
 
@@ -149,22 +151,24 @@ int main(void) {
         &stats);
 
     int mismatches = 0;
-    for (int i = 0; i < M; i++) {
-      for (int j = 0; j < N; j++) {
-        if (C_ref_bf16[i][j] != C_hw[i][j]) {
-          if (mismatches < 8) {
-            const float sw_val = bf16_to_float(C_ref_bf16[i][j]);
-            const float hw_val = bf16_to_float(C_hw[i][j]);
-            printf("Mismatch case=%d at (%d,%d): sw_bf16=0x%04x hw_bf16=0x%04x sw=",
-                   t, i, j,
-                   (unsigned)C_ref_bf16[i][j],
-                   (unsigned)C_hw[i][j]);
-            print_float_inline(sw_val);
-            printf("hw=");
-            print_float_inline(hw_val);
-            printf("\n");
+    if (hw_rc == WS_GEMM_OK) {
+      for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+          if (C_ref_bf16[i][j] != C_hw[i][j]) {
+            if (mismatches < 8) {
+              const float sw_val = bf16_to_float(C_ref_bf16[i][j]);
+              const float hw_val = bf16_to_float(C_hw[i][j]);
+              printf("Mismatch case=%d at (%d,%d): sw_bf16=0x%04x hw_bf16=0x%04x sw=",
+                     t, i, j,
+                     (unsigned)C_ref_bf16[i][j],
+                     (unsigned)C_hw[i][j]);
+              print_float_inline(sw_val);
+              printf("hw=");
+              print_float_inline(hw_val);
+              printf("\n");
+            }
+            mismatches++;
           }
-          mismatches++;
         }
       }
     }
