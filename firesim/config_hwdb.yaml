@@ -1,3 +1,8 @@
+FusedOnlineAttention8x8BF16FpgaSafe:
+    agfi: agfi-0fbb06ff25c9daeea
+    deploy_quintuplet_override: null
+    custom_runtime_config: null
+
 FusedMatmulSoftmax8x8BF16FpgaSafe:
     agfi: agfi-0bc1f6c731fa58937
     deploy_quintuplet_override: null
