@@ -1,10 +1,5 @@
 FusedOnlineAttention8x8BF16FpgaSafe:
-    agfi: agfi-07d829c020e2817ea #agfi-058cab5290743b6fe
-    deploy_quintuplet_override: null
-    custom_runtime_config: null
-
-FusedOnlineAttention8x8BF16FpgaSafe:
-    agfi: agfi-0fbb06ff25c9daeea
+    agfi: agfi-024e15ac13530f616 #agfi-07d829c020e2817ea #agfi-058cab5290743b6fe
     deploy_quintuplet_override: null
     custom_runtime_config: null
 

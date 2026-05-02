@@ -118,7 +118,7 @@ int main(void) {
 
   srand(17);
   printf("=== FPGA-Safe 8x8 Online Attention BF16 Test ===\n");
-  printf("CSV_HEADER,case,q_rows,kv_rows,d_k,value_cols,sw_cycles,hw_total_cycles,hw_accel_cycles,hw_rc,raw_hw_rc,speedup_x100,max_abs_diff_x100000,mismatches\n");
+  printf("CSV_HEADER,case,q_rows,kv_rows,d_k,value_cols,sw_cycles,hw_total_cycles,hw_accel_cycles,hw_score_cycles,hw_value_cycles,hw_rc,raw_hw_rc,speedup_x100,max_abs_diff_x100000,mismatches\n");
 
   int total_mismatches = 0;
   for (int t = 0; t < ntests; t++) {
@@ -206,7 +206,7 @@ int main(void) {
         stats.copy_out_cycles;
     const uint64_t speedup_x100 =
         hw_total_cycles == 0 ? 0 : (sw_cycles * 100u) / hw_total_cycles;
-    printf("CSV_DATA,%d,%d,%d,%d,%d,%lu,%lu,%lu,%d,%lu,%lu,%lu,%d\n",
+    printf("CSV_DATA,%d,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%d,%lu,%lu,%lu,%d\n",
            t,
            tc.q_rows,
            tc.kv_rows,
@@ -215,6 +215,8 @@ int main(void) {
            (unsigned long)sw_cycles,
            (unsigned long)hw_total_cycles,
            (unsigned long)stats.hw_e2e_cycles,
+           (unsigned long)stats.score_cycles,
+           (unsigned long)stats.value_cycles,
            hw_rc,
            (unsigned long)stats.raw_hw_rc,
            (unsigned long)speedup_x100,

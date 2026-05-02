@@ -161,26 +161,46 @@ int fpga_safe_attention_bf16(
     return FPGA_SAFE_ATTN_ERR_PACK;
   }
 
-  for (int n0 = 0; n0 < value_cols; n0 += FPGA_SAFE_ATTN_TILE_COLS) {
-    const int tile_value_cols = min_int(FPGA_SAFE_ATTN_TILE_COLS, value_cols - n0);
-    const uint64_t *v_tile = attn_b_tile_ptr(workspace->v_tiles, workspace->max_kv_rows, n0);
+  for (int m0 = 0; m0 < q_rows; m0 += FPGA_SAFE_ATTN_TILE_ROWS) {
+    const int tile_q_rows = min_int(FPGA_SAFE_ATTN_TILE_ROWS, q_rows - m0);
+    const uint64_t *q_tile = attn_q_tile_ptr(workspace->q_tiles, workspace->max_d_k, m0);
 
-    for (int m0 = 0; m0 < q_rows; m0 += FPGA_SAFE_ATTN_TILE_ROWS) {
-      const int tile_q_rows = min_int(FPGA_SAFE_ATTN_TILE_ROWS, q_rows - m0);
-      const uint64_t *q_tile = attn_q_tile_ptr(workspace->q_tiles, workspace->max_d_k, m0);
+    (void)ws_attn_set_qk_addrs(q_tile, workspace->k_tiles);
+    (void)ws_attn_set_dims(
+        tile_q_rows,
+        kv_rows,
+        d_k,
+        min_int(FPGA_SAFE_ATTN_TILE_COLS, value_cols));
+    (void)ws_attn_set_scale_bf16(scale_bf16);
 
-      (void)ws_attn_set_qk_addrs(q_tile, workspace->k_tiles);
+    const uint64_t score_start = measure ? ws_read_cycles() : 0;
+    const uint64_t score_rc = ws_attn_precompute_scores();
+    if (measure) {
+      const uint64_t score_cycles = ws_read_cycles() - score_start;
+      stats->score_cycles += score_cycles;
+      stats->hw_e2e_cycles += score_cycles;
+      stats->raw_hw_rc = score_rc;
+    }
+    if (score_rc != 0) {
+      return FPGA_SAFE_ATTN_ERR_RUN;
+    }
+
+    for (int n0 = 0; n0 < value_cols; n0 += FPGA_SAFE_ATTN_TILE_COLS) {
+      const int tile_value_cols = min_int(FPGA_SAFE_ATTN_TILE_COLS, value_cols - n0);
+      const uint64_t *v_tile = attn_b_tile_ptr(workspace->v_tiles, workspace->max_kv_rows, n0);
+
       (void)ws_attn_set_vout_addrs(v_tile, workspace->out_words);
       (void)ws_attn_set_dims(tile_q_rows, kv_rows, d_k, tile_value_cols);
-      (void)ws_attn_set_scale_bf16(scale_bf16);
 
-      const uint64_t hw_start = measure ? ws_read_cycles() : 0;
-      const uint64_t hw_rc = ws_attn_run();
+      const uint64_t value_start = measure ? ws_read_cycles() : 0;
+      const uint64_t value_rc = ws_attn_apply_cached();
       if (measure) {
-        stats->hw_e2e_cycles += ws_read_cycles() - hw_start;
-        stats->raw_hw_rc = hw_rc;
+        const uint64_t value_cycles = ws_read_cycles() - value_start;
+        stats->value_cycles += value_cycles;
+        stats->hw_e2e_cycles += value_cycles;
+        stats->raw_hw_rc = value_rc;
       }
-      if (hw_rc != 0) {
+      if (value_rc != 0) {
         return FPGA_SAFE_ATTN_ERR_RUN;
       }
 

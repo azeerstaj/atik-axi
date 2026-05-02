@@ -20,6 +20,8 @@
 #define SA_FUNCT_ATTN_SET_DIMS 10
 #define SA_FUNCT_ATTN_SET_SCALE_BF16 11
 #define SA_FUNCT_ATTN_RUN 12
+#define SA_FUNCT_ATTN_PRECOMPUTE_SCORES 13
+#define SA_FUNCT_ATTN_APPLY_CACHED 14
 
 enum {
   WS_PERF_BUSY_CYCLES = 0,
@@ -159,6 +161,22 @@ static inline uint64_t ws_attn_run(void) {
   uint64_t rd = 0;
   asm volatile("fence rw, rw" ::: "memory");
   ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_ATTN_RUN);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_precompute_scores(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_ATTN_PRECOMPUTE_SCORES);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_apply_cached(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_ATTN_APPLY_CACHED);
   asm volatile("fence rw, rw" ::: "memory");
   return rd;
 }

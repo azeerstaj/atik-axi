@@ -32,6 +32,8 @@ typedef struct {
   uint64_t k_pack_cycles;
   uint64_t v_pack_cycles;
   uint64_t hw_e2e_cycles;
+  uint64_t score_cycles;
+  uint64_t value_cycles;
   uint64_t copy_out_cycles;
   uint64_t raw_hw_rc;
 } fpga_safe_attention_stats_t;

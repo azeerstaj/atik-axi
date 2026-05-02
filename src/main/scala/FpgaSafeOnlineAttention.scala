@@ -90,6 +90,8 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val qkConfigured = RegInit(false.B)
   private val voutConfigured = RegInit(false.B)
   private val dimsConfigured = RegInit(false.B)
+  private val scoresReady = RegInit(false.B)
+  private val applyAfterScores = RegInit(true.B)
 
   private val fillIdx = RegInit(0.U(kWidth.W))
   private val computeIdx = RegInit(0.U(kWidth.W))
@@ -337,6 +339,7 @@ class FpgaSafeOnlineAttention8x8Impl(
       qBase := io.cmd.bits.rs1
       kBase := io.cmd.bits.rs2
       qkConfigured := true.B
+      scoresReady := false.B
       respData := 0.U
       state := s_resp
     }.elsewhen(funct === 9.U) {
@@ -346,15 +349,23 @@ class FpgaSafeOnlineAttention8x8Impl(
       respData := 0.U
       state := s_resp
     }.elsewhen(funct === 10.U) {
-      qRows := io.cmd.bits.rs1(15, 0)(rowCountWidth - 1, 0)
-      kvRows := io.cmd.bits.rs1(31, 16)(kWidth - 1, 0)
-      dK := io.cmd.bits.rs1(47, 32)(kWidth - 1, 0)
-      valueCols := io.cmd.bits.rs1(63, 48)(colCountWidth - 1, 0)
+      val newQRows = io.cmd.bits.rs1(15, 0)(rowCountWidth - 1, 0)
+      val newKvRows = io.cmd.bits.rs1(31, 16)(kWidth - 1, 0)
+      val newDK = io.cmd.bits.rs1(47, 32)(kWidth - 1, 0)
+      val newValueCols = io.cmd.bits.rs1(63, 48)(colCountWidth - 1, 0)
+      when(newQRows =/= qRows || newKvRows =/= kvRows || newDK =/= dK) {
+        scoresReady := false.B
+      }
+      qRows := newQRows
+      kvRows := newKvRows
+      dK := newDK
+      valueCols := newValueCols
       dimsConfigured := true.B
       respData := 0.U
       state := s_resp
     }.elsewhen(funct === 11.U) {
       scaleBf16 := io.cmd.bits.rs1(precision - 1, 0)
+      scoresReady := false.B
       respData := 0.U
       state := s_resp
     }.elsewhen(funct === 12.U) {
@@ -367,6 +378,8 @@ class FpgaSafeOnlineAttention8x8Impl(
           (valueCols =/= 0.U) && (valueCols <= nCols.U)
       respData := Mux(!qkConfigured || !voutConfigured || !dimsConfigured, 1.U, Mux(!dimsValid, 2.U, 0.U))
       when(dimsValid) {
+        scoresReady := false.B
+        applyAfterScores := true.B
         fillIdx := 0.U
         computeIdx := 0.U
         kvTileBase := 0.U
@@ -382,6 +395,61 @@ class FpgaSafeOnlineAttention8x8Impl(
           }
         }
         state := s_req_fill_q
+      }.otherwise {
+        state := s_resp
+      }
+    }.elsewhen(funct === 13.U) {
+      incRun := true.B
+      val dimsValid =
+        qkConfigured && dimsConfigured &&
+          (qRows =/= 0.U) && (qRows <= nRows.U) &&
+          (kvRows =/= 0.U) && (kvRows <= maxK.U) &&
+          (dK =/= 0.U) && (dK <= maxK.U)
+      respData := Mux(!qkConfigured || !dimsConfigured, 1.U, Mux(!dimsValid, 2.U, 0.U))
+      when(dimsValid) {
+        scoresReady := false.B
+        applyAfterScores := false.B
+        fillIdx := 0.U
+        computeIdx := 0.U
+        kvTileBase := 0.U
+        activeKvCols := 0.U
+        softRowIdx := 0.U
+        outIdx := 0.U
+        for (r <- 0 until nRows) {
+          rowMax(r) := minBf16
+          rowDenom(r) := 0.U
+          for (c <- 0 until nCols) {
+            scoreAccum(r)(c) := 0.S
+            outAccum(r)(c) := 0.S
+          }
+        }
+        state := s_req_fill_q
+      }.otherwise {
+        state := s_resp
+      }
+    }.elsewhen(funct === 14.U) {
+      incRun := true.B
+      val dimsValid =
+        voutConfigured && dimsConfigured && scoresReady &&
+          (qRows =/= 0.U) && (qRows <= nRows.U) &&
+          (kvRows =/= 0.U) && (kvRows <= maxK.U) &&
+          (dK =/= 0.U) && (dK <= maxK.U) &&
+          (valueCols =/= 0.U) && (valueCols <= nCols.U)
+      val missingConfig = !voutConfigured || !dimsConfigured
+      respData := Mux(missingConfig, 1.U, Mux(!scoresReady, 3.U, Mux(!dimsValid, 2.U, 0.U)))
+      when(dimsValid) {
+        fillIdx := 0.U
+        computeIdx := 0.U
+        kvTileBase := 0.U
+        activeKvCols := 0.U
+        softRowIdx := 0.U
+        outIdx := 0.U
+        for (r <- 0 until nRows) {
+          for (c <- 0 until nCols) {
+            outAccum(r)(c) := 0.S
+          }
+        }
+        state := s_p2_setup_tile
       }.otherwise {
         state := s_resp
       }
@@ -551,7 +619,13 @@ class FpgaSafeOnlineAttention8x8Impl(
       val nextTile = kvTileBase + nCols.U
       when(nextTile >= kvRows) {
         kvTileBase := 0.U
-        state := s_p2_setup_tile
+        scoresReady := true.B
+        when(applyAfterScores) {
+          state := s_p2_setup_tile
+        }.otherwise {
+          respData := 0.U
+          state := s_resp
+        }
       }.otherwise {
         kvTileBase := nextTile
         state := s_p1_setup_tile
