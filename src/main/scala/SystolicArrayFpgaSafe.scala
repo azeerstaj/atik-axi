@@ -578,10 +578,10 @@ class SystolicArrayFpgaSafe8x8Impl(
   require(tlSourceIds >= 2, "FPGA-safe 8x8 matmul uses one read source and one write source")
   require(softmaxFracPrecision >= log2Ceil(lutEntries) - 1, "softmax frac precision too small for LUT indexing")
 
-  val aBuf = Reg(Vec(maxK, UInt(cacheDataBits.W)))
-  val bBuf = Reg(Vec(maxK, UInt(cacheDataBits.W)))
-  val accum = RegInit(VecInit(Seq.fill(nRows)(VecInit(Seq.fill(nCols)(0.S(accumPrec.W))))))
-  val packedStoreWords = Reg(Vec(outputWordCount, UInt(xLen.W)))
+  val aBuf = Reg(Vec(maxK, UInt(cacheDataBits.W))) // a vector
+  val bBuf = Reg(Vec(maxK, UInt(cacheDataBits.W))) // b vector
+  val accum = RegInit(VecInit(Seq.fill(nRows)(VecInit(Seq.fill(nCols)(0.S(accumPrec.W)))))) // 0 init
+  val packedStoreWords = Reg(Vec(outputWordCount, UInt(xLen.W))) // packed output
   val softRowIdx = RegInit(0.U(rowIdxWidth.W))
   val softLatchedScores = Reg(Vec(nCols, UInt(precision.W)))
   val softRowMax = RegInit(minBf16)
@@ -635,9 +635,12 @@ class SystolicArrayFpgaSafe8x8Impl(
   scoreScaleConv.io.in := scoreScaleBf16
   val scoreScaleFixed = scoreScaleConv.io.out
 
+  // base pointers
   val aBase = RegInit(0.U(xLen.W))
   val bBase = RegInit(0.U(xLen.W))
   val cBase = RegInit(0.U(xLen.W))
+
+  // Weight stationary.
   val totalK = RegInit(0.U(kWidth.W))
   val bCacheK = RegInit(0.U(kWidth.W))
   val bCacheValid = RegInit(false.B)
@@ -683,6 +686,9 @@ class SystolicArrayFpgaSafe8x8Impl(
   val incTLARead = WireDefault(false.B)
   val incTLCWrite = WireDefault(false.B)
 
+  // Did we recieve the data?
+  // Did the memory acknowledged our output?
+  // Is the tlSrc matching the tag?
   val (tlOut, edgesOut) = outer.atlNode.out(0)
   val dHasData = edgesOut.hasData(tlOut.d.bits)
   val dSource = tlOut.d.bits.source(tlSourceIdxWidth - 1, 0)
@@ -732,6 +738,7 @@ class SystolicArrayFpgaSafe8x8Impl(
     mask = putMaskBytes.asUInt
   )._2
 
+  // read from buffers
   val aLanes = Wire(Vec(nRows, UInt(precision.W)))
   val bLanes = Wire(Vec(nCols, UInt(precision.W)))
   for (r <- 0 until nRows) {
@@ -741,6 +748,7 @@ class SystolicArrayFpgaSafe8x8Impl(
     bLanes(c) := bBuf(computeIdx)(precision * (c + 1) - 1, precision * c)
   }
 
+  // convert buffers bf16 data to fixed
   val aFixed = Seq.fill(nRows)(Module(new BFloat16ToSIntFixed(intBits = precision - fixedPointFracBits, fracBits = fixedPointFracBits)))
   val bFixed = Seq.fill(nCols)(Module(new BFloat16ToSIntFixed(intBits = precision - fixedPointFracBits, fracBits = fixedPointFracBits)))
   for (r <- 0 until nRows) {
@@ -753,6 +761,7 @@ class SystolicArrayFpgaSafe8x8Impl(
   val bf16Out = Wire(Vec(outCount, UInt(precision.W)))
   for (r <- 0 until nRows) {
     for (c <- 0 until nCols) {
+                                                // 64    , 16
       val conv = Module(new SIntFixedToBFloat16(accumPrec, 2 * fixedPointFracBits))
       val scoreForConv = Wire(SInt(accumPrec.W))
       if (applyRowSoftmax) {
@@ -766,6 +775,7 @@ class SystolicArrayFpgaSafe8x8Impl(
       bf16Out(r * nCols + c) := conv.io.out
     }
   }
+
   val packedStoreWordsWire = Wire(Vec(outputWordCount, UInt(xLen.W)))
   for (w <- 0 until outputWordCount) {
     val packedElems = Wire(Vec(outputElemsPerWord, UInt(precision.W)))
