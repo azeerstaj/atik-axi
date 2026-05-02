@@ -1,0 +1,12 @@
+› === FPGA-Safe 8x8 Online Attention BF16 Test ===^M
+  CSV_HEADER,case,q_rows,kv_rows,d_k,value_cols,sw_cycles,hw_total_cycles,hw_accel_cycles,hw_rc,raw_hw_rc,speedup_x100,max_abs_diff_x100000,mismatches^M
+  CSV_DATA,0,8,8,16,8,64594,8227,584,0,0,785,12351,0^M
+  CSV_DATA,1,8,16,16,8,125421,11321,871,0,0,1107,10131,0^M
+  CSV_DATA,2,8,64,64,8,979327,101014,7087,0,0,969,7745,0^M
+  CSV_DATA,3,64,64,64,64,11099735,0,0,2,0,0,0,1^M
+  CSV_DATA,4,16,64,64,16,2068930,136942,22422,0,0,1510,11846,0^M
+  CSV_DATA,5,32,128,64,32,9253404,443558,167613,0,0,2086,9297,0^M
+  CSV_DATA,6,32,256,128,64,32944608,2215070,1185097,0,0,1487,9095,0^M
+  *** FAILED *** (tohost = 7)^M
+  ^M
+
