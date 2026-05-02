@@ -178,6 +178,7 @@ int fpga_safe_attention_bf16(
       const uint64_t hw_rc = ws_attn_run();
       if (measure) {
         stats->hw_e2e_cycles += ws_read_cycles() - hw_start;
+        stats->raw_hw_rc = hw_rc;
       }
       if (hw_rc != 0) {
         return FPGA_SAFE_ATTN_ERR_RUN;
