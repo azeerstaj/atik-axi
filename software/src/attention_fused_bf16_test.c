@@ -7,9 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_Q_ROWS 8
-#define MAX_KV_ROWS 128
-#define MAX_D_K 64
+#define MAX_Q_ROWS 32
+#define MAX_KV_ROWS 256
+#define MAX_D_K 128
 #define MAX_VALUE_COLS 64
 #define SAMPLE_WIDTH 10
 #define ATTENTION_TOLERANCE 0.20f
@@ -246,7 +246,7 @@ static uint64_t ratio_x100(uint64_t sw_cycles, uint64_t hw_cycles) {
 }
 
 int main(void) {
-  printf("=== BF16 Fused Attention Test ===\n");
+  printf("=== BF16 Fused Online Attention Test ===\n");
 
   // q_rows
   // kv_rows
@@ -254,15 +254,14 @@ int main(void) {
   // value_cols
   // causal
   const attention_case_t tests[] = {
-      {4, 4, 4, 4, 0},
-      // {4, 4, 4, 4, 1},
-      {4, 8, 4, 4, 0},
-      {8, 8, 8, 8, 0},
-      // {4, 8, 4, 4, 1},
-      // {4, 16, 32, 32, 0},
-      // {4, 32, 32, 32, 1},
-      // {6, 64, 64, 48, 1},
-      // {8, 96, 64, 64, 0},
+      {4, 4, 16, 4, 0},
+      {4, 8, 16, 4, 0},
+      {4, 16, 16, 4, 0},
+      {8, 32, 32, 8, 0},
+      {16, 64, 64, 16, 0},
+      {32, 128, 64, 32, 0},
+      {32, 256, 128, 64, 0},
+      {16, 128, 64, 32, 1},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
 

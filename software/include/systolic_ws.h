@@ -15,6 +15,11 @@
 #define SA_FUNCT_CLEAR_COUNTERS 5
 #define SA_FUNCT_RUN_PRELOADED 6
 #define SA_FUNCT_SET_SCALE_BF16 7
+#define SA_FUNCT_ATTN_SET_QK_ADDRS 8
+#define SA_FUNCT_ATTN_SET_VOUT_ADDRS 9
+#define SA_FUNCT_ATTN_SET_DIMS 10
+#define SA_FUNCT_ATTN_SET_SCALE_BF16 11
+#define SA_FUNCT_ATTN_RUN 12
 
 enum {
   WS_PERF_BUSY_CYCLES = 0,
@@ -101,6 +106,59 @@ static inline uint64_t ws_sa_set_scale_bf16(uint16_t scale_bf16) {
   uint64_t rd = 0;
   asm volatile("fence rw, rw" ::: "memory");
   ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)scale_bf16, 0, SA_FUNCT_SET_SCALE_BF16);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_set_qk_addrs(
+    const uint64_t *q_tiles,
+    const uint64_t *k_tiles) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, q_tiles, k_tiles, SA_FUNCT_ATTN_SET_QK_ADDRS);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_set_vout_addrs(
+    const uint64_t *v_tiles,
+    uint64_t *out_words) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, v_tiles, out_words, SA_FUNCT_ATTN_SET_VOUT_ADDRS);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_set_dims(
+    int q_rows,
+    int kv_rows,
+    int d_k,
+    int value_cols) {
+  const uint64_t packed_dims =
+      (((uint64_t)(uint16_t)value_cols) << 48) |
+      (((uint64_t)(uint16_t)d_k) << 32) |
+      (((uint64_t)(uint16_t)kv_rows) << 16) |
+      (uint64_t)(uint16_t)q_rows;
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, packed_dims, 0, SA_FUNCT_ATTN_SET_DIMS);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_set_scale_bf16(uint16_t scale_bf16) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)scale_bf16, 0, SA_FUNCT_ATTN_SET_SCALE_BF16);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_run(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_ATTN_RUN);
   asm volatile("fence rw, rw" ::: "memory");
   return rd;
 }

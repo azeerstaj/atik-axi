@@ -879,12 +879,13 @@ class FusedAttentionWSRoCC(
   val accumBits: Int = 32,
   val softmaxIntPrecision: Int = 12,
   val softmaxFracPrecision: Int = 20,
-  val numTLSourceIds: Int = 2
+  val numTLSourceIds: Int = 2,
+  val clientName: String = "FusedAttentionWSRoCC"
 )(implicit p: Parameters) extends LazyRoCC(opcodes) {
   override lazy val module = new FusedAttentionWSImpl(this)
   override val atlNode = TLClientNode(
     Seq(TLMasterPortParameters.v1(Seq(TLMasterParameters.v1(
-      name = "FusedAttentionWSRoCC",
+      name = clientName,
       sourceId = IdRange(0, numTLSourceIds)
     ))))
   )

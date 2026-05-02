@@ -532,8 +532,8 @@ class SystolicArrayFpgaSafe8x8Impl(
   private val accumPrec = outer.accumBits // 64, keeps it simple for the ABI.
   private val tlSourceIds = outer.numTLSourceIds // 2, tags for different mem transactions
   private val applyRowSoftmax = outer.applyRowSoftmax // true, matmul or softmax
-  private val softmaxIntPrecision = outer.softmaxIntPrecision // 12, Output data int prec
-  private val softmaxFracPrecision = outer.softmaxFracPrecision // 20, Output data frac prec
+  private val softmaxIntPrecision = outer.softmaxIntPrecision
+  private val softmaxFracPrecision = outer.softmaxFracPrecision
   private val softBitWidth = softmaxIntPrecision + softmaxFracPrecision
   private val lutEntries = 256 // Range of possible reciprocals
   private val lutBits = 64 // Precision of each reciprocal

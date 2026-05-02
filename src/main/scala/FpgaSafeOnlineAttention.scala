@@ -1,0 +1,631 @@
+package toyrocc
+
+import chisel3._
+import chisel3.util._
+import scala.math.BigDecimal.RoundingMode
+
+import freechips.rocketchip.diplomacy.IdRange
+import freechips.rocketchip.rocket._
+import freechips.rocketchip.tile._
+import freechips.rocketchip.tilelink._
+import org.chipsalliance.cde.config.Parameters
+
+class FpgaSafeOnlineAttention8x8Impl(
+  outer: FpgaSafeOnlineAttention8x8RoCC
+)(implicit p: Parameters) extends LazyRoCCModuleImp(outer)
+  with HasCoreParameters
+  with HasL1CacheParameters {
+
+  val cacheParams = tileParams.dcache.get
+
+  private val precision = outer.precision
+  private val nRows = outer.nRows
+  private val nCols = outer.nCols
+  private val maxK = outer.maxK
+  private val fixedPointFracBits = outer.fixedPointFracBits
+  private val accumPrec = outer.accumBits
+  private val softmaxIntPrecision = outer.softmaxIntPrecision
+  private val softmaxFracPrecision = outer.softmaxFracPrecision
+  private val tlSourceIds = outer.numTLSourceIds
+
+  private val xlenBytes = xLen / 8
+  private val beatBytes = cacheDataBits / 8
+  private val beatOffsetBits = log2Ceil(beatBytes)
+  private val wordsPerBeat = beatBytes / xlenBytes
+  private val laneWidth = math.max(1, log2Ceil(wordsPerBeat))
+  private val tlSourceIdxWidth = math.max(1, log2Ceil(tlSourceIds))
+  private val kWidth = log2Ceil(maxK + 1)
+  private val rowCountWidth = log2Ceil(nRows + 1)
+  private val colCountWidth = log2Ceil(nCols + 1)
+  private val tileBaseWidth = log2Ceil(maxK + nCols + 1)
+  private val outCount = nRows * nCols
+  private val outputElemsPerWord = xLen / precision
+  private val outputWordCount = (outCount + outputElemsPerWord - 1) / outputElemsPerWord
+  private val outIdxWidth = log2Ceil(outputWordCount + 1)
+  private val scoreFracBits = 2 * fixedPointFracBits
+  private val scoreScaleIntBits = 8
+  private val softBitWidth = softmaxIntPrecision + softmaxFracPrecision
+  private val lutEntries = 256
+  private val lutBits = 64
+  private val minBf16 = "hFF80".U(precision.W)
+  private val readTlSourceId = 0
+  private val writeTlSourceId = 1
+
+  require(precision == 16, "FPGA-safe online attention targets BF16 lanes")
+  require(nRows == 8 && nCols == 8, "FPGA-safe online attention targets 8x8 tiles")
+  require(xLen == 64, s"software ABI expects RV64 xLen, got $xLen")
+  require(cacheDataBits >= precision * nRows, "Q/K/V packed records must fit in one cache beat")
+  require(cacheDataBits % xLen == 0, "cacheDataBits must be a multiple of xLen")
+  require(isPow2(wordsPerBeat), "wordsPerBeat must be a power of two")
+  require(outputElemsPerWord == 4, "BF16 output packing expects four lanes per xLen word")
+  require(accumPrec <= xLen, "accumulator must fit in xLen for software-visible counters")
+  require(tlSourceIds >= 2, "one read source and one write source are required")
+  require(softmaxFracPrecision >= log2Ceil(lutEntries) - 1, "softmax frac precision too small")
+
+  private val qBuf = Reg(Vec(maxK, UInt(cacheDataBits.W)))
+  private val kBuf = Reg(Vec(maxK, UInt(cacheDataBits.W)))
+  private val vBuf = Reg(Vec(nCols, UInt(cacheDataBits.W)))
+  private val scoreAccum = RegInit(VecInit(Seq.fill(nRows)(VecInit(Seq.fill(nCols)(0.S(accumPrec.W))))))
+  private val outAccum = RegInit(VecInit(Seq.fill(nRows)(VecInit(Seq.fill(nCols)(0.S(accumPrec.W))))))
+  private val rowMax = RegInit(VecInit(Seq.fill(nRows)(minBf16)))
+  private val rowDenom = RegInit(VecInit(Seq.fill(nRows)(0.U(softBitWidth.W))))
+  private val packedStoreWords = Reg(Vec(outputWordCount, UInt(xLen.W)))
+
+  private val qBase = RegInit(0.U(xLen.W))
+  private val kBase = RegInit(0.U(xLen.W))
+  private val vBase = RegInit(0.U(xLen.W))
+  private val outBase = RegInit(0.U(xLen.W))
+  private val qRows = RegInit(0.U(rowCountWidth.W))
+  private val kvRows = RegInit(0.U(kWidth.W))
+  private val dK = RegInit(0.U(kWidth.W))
+  private val valueCols = RegInit(0.U(colCountWidth.W))
+  private val scaleBf16 = RegInit("h3F80".U(precision.W))
+  private val qkConfigured = RegInit(false.B)
+  private val voutConfigured = RegInit(false.B)
+  private val dimsConfigured = RegInit(false.B)
+
+  private val fillIdx = RegInit(0.U(kWidth.W))
+  private val computeIdx = RegInit(0.U(kWidth.W))
+  private val kvTileBase = RegInit(0.U(tileBaseWidth.W))
+  private val activeKvCols = RegInit(0.U(colCountWidth.W))
+  private val softRowIdx = RegInit(0.U(rowCountWidth.W))
+  private val outIdx = RegInit(0.U(outIdxWidth.W))
+  private val respRd = RegInit(0.U(5.W))
+  private val respData = RegInit(0.U(xLen.W))
+
+  private val states = Enum(24)
+  private val s_idle = states(0)
+  private val s_req_fill_q = states(1)
+  private val s_wait_fill_q = states(2)
+  private val s_p1_setup_tile = states(3)
+  private val s_req_fill_k = states(4)
+  private val s_wait_fill_k = states(5)
+  private val s_clear_scores = states(6)
+  private val s_compute_scores = states(7)
+  private val s_p1_row_load = states(8)
+  private val s_p1_row_update = states(9)
+  private val s_p2_setup_tile = states(10)
+  private val s_req_fill_k2 = states(11)
+  private val s_wait_fill_k2 = states(12)
+  private val s_req_fill_v = states(13)
+  private val s_wait_fill_v = states(14)
+  private val s_clear_scores2 = states(15)
+  private val s_compute_scores2 = states(16)
+  private val s_p2_row_load = states(17)
+  private val s_p2_row_accum = states(18)
+  private val s_quantize = states(19)
+  private val s_req_put = states(20)
+  private val s_wait_put = states(21)
+  private val s_resp = states(22)
+  private val s_error = states(23)
+  private val state = RegInit(s_idle)
+
+  private val numPerfCounters = 12
+  private val perfCounterWidth = log2Ceil(numPerfCounters)
+  private val perfCounters = RegInit(VecInit(Seq.fill(numPerfCounters)(0.U(xLen.W))))
+  private val clearPerfCounters = WireDefault(false.B)
+  private val incTLRead = WireDefault(false.B)
+  private val incTLWrite = WireDefault(false.B)
+  private val incRun = WireDefault(false.B)
+
+  private val (tlOut, edgesOut) = outer.atlNode.out(0)
+  private val dHasData = edgesOut.hasData(tlOut.d.bits)
+  private val dSource = tlOut.d.bits.source(tlSourceIdxWidth - 1, 0)
+  private val dIsReadResp = dHasData && tlOut.d.bits.opcode === TLMessages.AccessAckData
+  private val dIsWriteAck = !dHasData && tlOut.d.bits.opcode === TLMessages.AccessAck
+
+  private def beatAddr(base: UInt, idx: UInt): UInt = base + idx * beatBytes.U
+  private def kTileAddr(base: UInt, tileBase: UInt, idx: UInt): UInt =
+    base + ((tileBase >> log2Ceil(nCols)) * dK.pad(xLen) + idx.pad(xLen)) * beatBytes.U
+  private def wordAddr(base: UInt, idx: UInt): UInt = base + idx * xlenBytes.U
+
+  private val beatLgSize = beatOffsetBits.U
+  private val getQBits = edgesOut.Get(readTlSourceId.U, beatAddr(qBase, fillIdx), beatLgSize)._2
+  private val getKBits = edgesOut.Get(readTlSourceId.U, kTileAddr(kBase, kvTileBase, fillIdx), beatLgSize)._2
+  private val getVBits = edgesOut.Get(readTlSourceId.U, beatAddr(vBase, kvTileBase(kWidth - 1, 0) + fillIdx), beatLgSize)._2
+
+  private val writeAddr = wordAddr(outBase, outIdx)
+  private val writeLane = writeAddr(beatOffsetBits - 1, log2Ceil(xlenBytes))
+  private val writeBeatAddr = writeAddr & ~((beatBytes - 1).U(xLen.W))
+  private val writeLaneWordIdxs = Wire(Vec(wordsPerBeat, UInt(outIdxWidth.W)))
+  private val writeLaneValids = Wire(Vec(wordsPerBeat, Bool()))
+  for (w <- 0 until wordsPerBeat) {
+    val laneAfterStart = w.U(laneWidth.W) >= writeLane
+    val laneDelta = Mux(laneAfterStart, w.U(laneWidth.W) - writeLane, 0.U(laneWidth.W))
+    writeLaneWordIdxs(w) := outIdx + laneDelta
+    writeLaneValids(w) := laneAfterStart && writeLaneWordIdxs(w) < outputWordCount.U
+  }
+  private val writeWordsThisBeat = PopCount(writeLaneValids)
+  private val putDataWords = Wire(Vec(wordsPerBeat, UInt(xLen.W)))
+  for (w <- 0 until wordsPerBeat) {
+    putDataWords(w) := Mux(writeLaneValids(w), packedStoreWords(writeLaneWordIdxs(w)), 0.U)
+  }
+  private val putMaskBytes = Wire(Vec(beatBytes, Bool()))
+  for (byte <- 0 until beatBytes) {
+    putMaskBytes(byte) := writeLaneValids(byte / xlenBytes)
+  }
+  private val putBits = edgesOut.Put(
+    writeTlSourceId.U,
+    writeBeatAddr,
+    beatLgSize,
+    putDataWords.asUInt,
+    putMaskBytes.asUInt
+  )._2
+
+  private def laneFromBeat(beat: UInt, lane: Int): UInt =
+    beat(precision * (lane + 1) - 1, precision * lane)
+
+  private val qLanes = Wire(Vec(nRows, UInt(precision.W)))
+  private val kLanes = Wire(Vec(nCols, UInt(precision.W)))
+  for (i <- 0 until nRows) {
+    qLanes(i) := laneFromBeat(qBuf(computeIdx), i)
+    kLanes(i) := laneFromBeat(kBuf(computeIdx), i)
+  }
+
+  private val qFixed = Seq.fill(nRows)(Module(new BFloat16ToSIntFixed(precision - fixedPointFracBits, fixedPointFracBits)))
+  private val kFixed = Seq.fill(nCols)(Module(new BFloat16ToSIntFixed(precision - fixedPointFracBits, fixedPointFracBits)))
+  for (i <- 0 until nRows) {
+    qFixed(i).io.in := qLanes(i)
+    kFixed(i).io.in := kLanes(i)
+  }
+
+  private val scaleConv = Module(new BFloat16ToSIntFixed(scoreScaleIntBits, scoreFracBits))
+  scaleConv.io.in := scaleBf16
+  private val scoreScaleFixed = scaleConv.io.out
+
+  private val scoreBf16 = Wire(Vec(nRows, Vec(nCols, UInt(precision.W))))
+  for (r <- 0 until nRows) {
+    for (c <- 0 until nCols) {
+      val scaledWide = (scoreAccum(r)(c) * scoreScaleFixed).asSInt
+      val scaledShifted = (scaledWide >> scoreFracBits).asSInt
+      val scaledTrimmed = scaledShifted(accumPrec - 1, 0).asSInt
+      val conv = Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits))
+      conv.io.in := scaledTrimmed
+      scoreBf16(r)(c) := Mux(c.U < activeKvCols, conv.io.out, minBf16)
+    }
+  }
+
+  private val softLatchedScores = Reg(Vec(nCols, UInt(precision.W)))
+  private val softVecMax = Module(new BFloat16VectorMax(nCols))
+  private val softGlobalMax = Module(new BFloat16Max)
+  private val softMaxSub = Module(new BFloat16Sub)
+  private val softMaxExp = Module(new BFloat16Exp)
+  private val softMaxFixed = Module(new BFloat16ToFixed(softmaxIntPrecision, softmaxFracPrecision))
+  private val softVecSubs = Seq.fill(nCols)(Module(new BFloat16Sub))
+  private val softVecExps = Seq.fill(nCols)(Module(new BFloat16Exp))
+  private val softVecFixedPs = Seq.fill(nCols)(Module(new BFloat16ToFixed(softmaxIntPrecision, softmaxFracPrecision)))
+  private val softVecNormOut = Seq.fill(nCols)(Module(new UIntFixedToBFloat16(softBitWidth, softmaxFracPrecision)))
+  private val softVecFixed = Wire(Vec(nCols, UInt(softBitWidth.W)))
+  private val softProbBf16 = Wire(Vec(nCols, UInt(precision.W)))
+  private val rowMaxRead = rowMax(softRowIdx)
+  private val rowDenomRead = rowDenom(softRowIdx)
+
+  private val softLutIndexBits = log2Ceil(lutEntries)
+  private val softLut = VecInit(Seq.tabulate(lutEntries) { i =>
+    val mant = BigDecimal(1) + (BigDecimal(i) + BigDecimal(0.5)) / BigDecimal(lutEntries)
+    val recip = BigDecimal(1) / mant
+    val scaled = (recip * BigDecimal(2).pow(lutBits - 1)).setScale(0, RoundingMode.HALF_UP).toBigInt
+    scaled.U(lutBits.W)
+  })
+  private def reciprocalFixed(sum: UInt): UInt = {
+    val nonZero = sum.orR
+    val msb = (softBitWidth - 1).U - PriorityEncoder(Reverse(sum))
+    val shift = Mux(nonZero, msb - softmaxFracPrecision.U, 0.U)
+    val mant = sum >> shift
+    val lutIndex = mant(softmaxFracPrecision, softmaxFracPrecision - softLutIndexBits + 1)
+    val lutVal = softLut(lutIndex)
+    val scaleDown = lutBits - 1 - softmaxFracPrecision
+    val lutScaled = if (scaleDown >= 0) (lutVal >> scaleDown) else (lutVal << (-scaleDown))
+    val invRaw = lutScaled >> shift
+    Mux(nonZero, invRaw.pad(softBitWidth)(softBitWidth - 1, 0), 0.U)
+  }
+
+  softVecMax.io.in := softLatchedScores.asUInt
+  softGlobalMax.io.in_1 := softVecMax.io.out
+  softGlobalMax.io.in_2 := rowMaxRead
+  softMaxSub.io.in_1 := rowMaxRead
+  softMaxSub.io.in_2 := softGlobalMax.io.out
+  softMaxExp.io.in := softMaxSub.io.out
+  softMaxFixed.io.in := softMaxExp.io.out
+
+  private val softOne = (1.U(softBitWidth.W) << softmaxFracPrecision)(softBitWidth - 1, 0)
+  private val softMaxFixedClamped = Mux(softMaxFixed.io.out > softOne, softOne, softMaxFixed.io.out)
+  private val softProdDenomFull = rowDenomRead * softMaxFixedClamped
+  private val softProdDenom = (softProdDenomFull >> softmaxFracPrecision)(softBitWidth - 1, 0)
+  private val softSubBase = Mux(state === s_p2_row_accum, rowMaxRead, softGlobalMax.io.out)
+  private val softInvSum = reciprocalFixed(rowDenomRead)
+
+  for (i <- 0 until nCols) {
+    softVecSubs(i).io.in_1 := softLatchedScores(i)
+    softVecSubs(i).io.in_2 := softSubBase
+    softVecExps(i).io.in := softVecSubs(i).io.out
+    softVecFixedPs(i).io.in := softVecExps(i).io.out
+    softVecFixed(i) := softVecFixedPs(i).io.out
+    val normFull = softVecFixed(i) * softInvSum
+    val normFixed = (normFull >> softmaxFracPrecision)(softBitWidth - 1, 0)
+    softVecNormOut(i).io.in := normFixed
+    softProbBf16(i) := softVecNormOut(i).io.out
+  }
+  private val softVecSum = softVecFixed.reduceTree(_ + _)
+  private val softDenomNext = softVecSum + softProdDenom
+
+  private val probFixed = Seq.fill(nCols)(Module(new BFloat16ToSIntFixed(precision - fixedPointFracBits, fixedPointFracBits)))
+  for (c <- 0 until nCols) {
+    probFixed(c).io.in := softProbBf16(c)
+  }
+  private val vFixed = Seq.fill(nCols, nCols)(Module(new BFloat16ToSIntFixed(precision - fixedPointFracBits, fixedPointFracBits)))
+  for (kv <- 0 until nCols) {
+    for (vc <- 0 until nCols) {
+      vFixed(kv)(vc).io.in := laneFromBeat(vBuf(kv), vc)
+    }
+  }
+
+  private val outBf16 = Wire(Vec(outCount, UInt(precision.W)))
+  for (r <- 0 until nRows) {
+    for (c <- 0 until nCols) {
+      val conv = Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits))
+      conv.io.in := outAccum(r)(c)
+      outBf16(r * nCols + c) := Mux(r.U < qRows && c.U < valueCols, conv.io.out, 0.U)
+    }
+  }
+
+  private val packedStoreWordsWire = Wire(Vec(outputWordCount, UInt(xLen.W)))
+  for (w <- 0 until outputWordCount) {
+    val packedElems = Wire(Vec(outputElemsPerWord, UInt(precision.W)))
+    for (e <- 0 until outputElemsPerWord) {
+      val idx = w * outputElemsPerWord + e
+      if (idx < outCount) {
+        packedElems(e) := outBf16(idx)
+      } else {
+        packedElems(e) := 0.U
+      }
+    }
+    packedStoreWordsWire(w) := packedElems.asUInt
+  }
+
+  tlOut.a.valid := false.B
+  tlOut.a.bits := getQBits
+  tlOut.d.ready := false.B
+  io.cmd.ready := state === s_idle
+  io.resp.valid := state === s_resp
+  io.resp.bits.rd := respRd
+  io.resp.bits.data := respData
+  io.busy := state =/= s_idle
+  io.interrupt := false.B
+
+  when(io.cmd.fire) {
+    respRd := io.cmd.bits.inst.rd
+    val funct = io.cmd.bits.inst.funct
+    when(funct === 8.U) {
+      qBase := io.cmd.bits.rs1
+      kBase := io.cmd.bits.rs2
+      qkConfigured := true.B
+      respData := 0.U
+      state := s_resp
+    }.elsewhen(funct === 9.U) {
+      vBase := io.cmd.bits.rs1
+      outBase := io.cmd.bits.rs2
+      voutConfigured := true.B
+      respData := 0.U
+      state := s_resp
+    }.elsewhen(funct === 10.U) {
+      qRows := io.cmd.bits.rs1(15, 0)(rowCountWidth - 1, 0)
+      kvRows := io.cmd.bits.rs1(31, 16)(kWidth - 1, 0)
+      dK := io.cmd.bits.rs1(47, 32)(kWidth - 1, 0)
+      valueCols := io.cmd.bits.rs1(63, 48)(colCountWidth - 1, 0)
+      dimsConfigured := true.B
+      respData := 0.U
+      state := s_resp
+    }.elsewhen(funct === 11.U) {
+      scaleBf16 := io.cmd.bits.rs1(precision - 1, 0)
+      respData := 0.U
+      state := s_resp
+    }.elsewhen(funct === 12.U) {
+      incRun := true.B
+      val dimsValid =
+        qkConfigured && voutConfigured && dimsConfigured &&
+          (qRows =/= 0.U) && (qRows <= nRows.U) &&
+          (kvRows =/= 0.U) && (kvRows <= maxK.U) &&
+          (dK =/= 0.U) && (dK <= maxK.U) &&
+          (valueCols =/= 0.U) && (valueCols <= nCols.U)
+      respData := Mux(!qkConfigured || !voutConfigured || !dimsConfigured, 1.U, Mux(!dimsValid, 2.U, 0.U))
+      when(dimsValid) {
+        fillIdx := 0.U
+        computeIdx := 0.U
+        kvTileBase := 0.U
+        activeKvCols := 0.U
+        softRowIdx := 0.U
+        outIdx := 0.U
+        for (r <- 0 until nRows) {
+          rowMax(r) := minBf16
+          rowDenom(r) := 0.U
+          for (c <- 0 until nCols) {
+            scoreAccum(r)(c) := 0.S
+            outAccum(r)(c) := 0.S
+          }
+        }
+        state := s_req_fill_q
+      }.otherwise {
+        state := s_resp
+      }
+    }.elsewhen(funct === 5.U) {
+      clearPerfCounters := true.B
+      respData := 0.U
+      state := s_resp
+    }.elsewhen(funct === 6.U) {
+      val counterSel = io.cmd.bits.rs1
+      val counterIdx = counterSel(perfCounterWidth - 1, 0)
+      respData := Mux(counterSel < numPerfCounters.U, perfCounters(counterIdx), "hBAD0BAD0BAD0BAD0".U)
+      state := s_resp
+    }.elsewhen(funct === 2.U) {
+      respData := Cat(0.U((xLen - 2).W), state =/= s_idle, state === s_resp)
+      state := s_resp
+    }.otherwise {
+      respData := "hDEAD".U
+      state := s_resp
+    }
+  }
+
+  when(state === s_req_fill_q) {
+    tlOut.a.valid := fillIdx < dK
+    tlOut.a.bits := getQBits
+    when(tlOut.a.fire) {
+      incTLRead := true.B
+      state := s_wait_fill_q
+    }
+  }
+
+  when(state === s_wait_fill_q) {
+    tlOut.d.ready := true.B
+    when(tlOut.d.fire) {
+      assert(dIsReadResp && dSource === readTlSourceId.U, "online attention expected Q read response")
+      qBuf(fillIdx) := tlOut.d.bits.data
+      val nextIdx = fillIdx + 1.U
+      when(nextIdx >= dK) {
+        fillIdx := 0.U
+        kvTileBase := 0.U
+        state := s_p1_setup_tile
+      }.otherwise {
+        fillIdx := nextIdx
+        state := s_req_fill_q
+      }
+    }
+  }
+
+  when(state === s_p1_setup_tile || state === s_p2_setup_tile) {
+    val remaining = kvRows.pad(tileBaseWidth) - kvTileBase
+    activeKvCols := Mux(remaining > nCols.U, nCols.U, remaining)(colCountWidth - 1, 0)
+    fillIdx := 0.U
+    state := Mux(state === s_p1_setup_tile, s_req_fill_k, s_req_fill_k2)
+  }
+
+  when(state === s_req_fill_k || state === s_req_fill_k2) {
+    tlOut.a.valid := fillIdx < dK
+    tlOut.a.bits := getKBits
+    when(tlOut.a.fire) {
+      incTLRead := true.B
+      state := Mux(state === s_req_fill_k, s_wait_fill_k, s_wait_fill_k2)
+    }
+  }
+
+  when(state === s_wait_fill_k || state === s_wait_fill_k2) {
+    tlOut.d.ready := true.B
+    when(tlOut.d.fire) {
+      assert(dIsReadResp && dSource === readTlSourceId.U, "online attention expected K read response")
+      kBuf(fillIdx) := tlOut.d.bits.data
+      val nextIdx = fillIdx + 1.U
+      when(nextIdx >= dK) {
+        fillIdx := 0.U
+        computeIdx := 0.U
+        state := Mux(state === s_wait_fill_k, s_clear_scores, s_req_fill_v)
+      }.otherwise {
+        fillIdx := nextIdx
+        state := Mux(state === s_wait_fill_k, s_req_fill_k, s_req_fill_k2)
+      }
+    }
+  }
+
+  when(state === s_req_fill_v) {
+    tlOut.a.valid := fillIdx < activeKvCols
+    tlOut.a.bits := getVBits
+    when(tlOut.a.fire) {
+      incTLRead := true.B
+      state := s_wait_fill_v
+    }
+  }
+
+  when(state === s_wait_fill_v) {
+    tlOut.d.ready := true.B
+    when(tlOut.d.fire) {
+      assert(dIsReadResp && dSource === readTlSourceId.U, "online attention expected V read response")
+      vBuf(fillIdx) := tlOut.d.bits.data
+      val nextIdx = fillIdx + 1.U
+      when(nextIdx >= activeKvCols) {
+        fillIdx := 0.U
+        computeIdx := 0.U
+        state := s_clear_scores2
+      }.otherwise {
+        fillIdx := nextIdx
+        state := s_req_fill_v
+      }
+    }
+  }
+
+  when(state === s_clear_scores || state === s_clear_scores2) {
+    for (r <- 0 until nRows) {
+      for (c <- 0 until nCols) {
+        scoreAccum(r)(c) := 0.S
+      }
+    }
+    computeIdx := 0.U
+    state := Mux(state === s_clear_scores, s_compute_scores, s_compute_scores2)
+  }
+
+  when(state === s_compute_scores || state === s_compute_scores2) {
+    for (r <- 0 until nRows) {
+      for (c <- 0 until nCols) {
+        val product = qFixed(r).io.out * kFixed(c).io.out
+        val sum = scoreAccum(r)(c) + product.asSInt
+        scoreAccum(r)(c) := sum(accumPrec - 1, 0).asSInt
+      }
+    }
+    when(computeIdx + 1.U >= dK) {
+      softRowIdx := 0.U
+      state := Mux(state === s_compute_scores, s_p1_row_load, s_p2_row_load)
+    }.otherwise {
+      computeIdx := computeIdx + 1.U
+    }
+  }
+
+  when(state === s_p1_row_load || state === s_p2_row_load) {
+    for (c <- 0 until nCols) {
+      softLatchedScores(c) := scoreBf16(softRowIdx)(c)
+    }
+    state := Mux(state === s_p1_row_load, s_p1_row_update, s_p2_row_accum)
+  }
+
+  when(state === s_p1_row_update) {
+    when(softRowIdx < qRows) {
+      rowMax(softRowIdx) := softGlobalMax.io.out
+      rowDenom(softRowIdx) := softDenomNext
+    }
+    when(softRowIdx + 1.U >= qRows) {
+      val nextTile = kvTileBase + nCols.U
+      when(nextTile >= kvRows) {
+        kvTileBase := 0.U
+        state := s_p2_setup_tile
+      }.otherwise {
+        kvTileBase := nextTile
+        state := s_p1_setup_tile
+      }
+    }.otherwise {
+      softRowIdx := softRowIdx + 1.U
+      state := s_p1_row_load
+    }
+  }
+
+  when(state === s_p2_row_accum) {
+    when(softRowIdx < qRows) {
+      for (vc <- 0 until nCols) {
+        val terms = Seq.tabulate(nCols) { kv =>
+          val product = (probFixed(kv).io.out * vFixed(kv)(vc).io.out).asSInt
+          val addend = Wire(SInt(accumPrec.W))
+          addend := Mux(kv.U < activeKvCols && vc.U < valueCols, product, 0.S)
+          addend
+        }
+        val tileSum = terms.reduce(_ + _)
+        val sum = outAccum(softRowIdx)(vc) + tileSum
+        outAccum(softRowIdx)(vc) := sum(accumPrec - 1, 0).asSInt
+      }
+    }
+    when(softRowIdx + 1.U >= qRows) {
+      val nextTile = kvTileBase + nCols.U
+      when(nextTile >= kvRows) {
+        outIdx := 0.U
+        state := s_quantize
+      }.otherwise {
+        kvTileBase := nextTile
+        state := s_p2_setup_tile
+      }
+    }.otherwise {
+      softRowIdx := softRowIdx + 1.U
+      state := s_p2_row_load
+    }
+  }
+
+  when(state === s_quantize) {
+    for (w <- 0 until outputWordCount) {
+      packedStoreWords(w) := packedStoreWordsWire(w)
+    }
+    outIdx := 0.U
+    state := s_req_put
+  }
+
+  when(state === s_req_put) {
+    tlOut.a.valid := outIdx < outputWordCount.U
+    tlOut.a.bits := putBits
+    when(tlOut.a.fire) {
+      incTLWrite := true.B
+      state := s_wait_put
+    }
+  }
+
+  when(state === s_wait_put) {
+    tlOut.d.ready := true.B
+    when(tlOut.d.fire) {
+      assert(dIsWriteAck && dSource === writeTlSourceId.U, "online attention expected output write ack")
+      val nextOutIdx = outIdx + writeWordsThisBeat
+      when(nextOutIdx >= outputWordCount.U) {
+        respData := 0.U
+        state := s_resp
+      }.otherwise {
+        outIdx := nextOutIdx
+        state := s_req_put
+      }
+    }
+  }
+
+  when(io.resp.fire) {
+    state := s_idle
+  }
+
+  when(clearPerfCounters) {
+    for (i <- 0 until numPerfCounters) {
+      perfCounters(i) := 0.U
+    }
+  }.otherwise {
+    when(state =/= s_idle && state =/= s_resp) { perfCounters(0) := perfCounters(0) + 1.U }
+    when(incRun) { perfCounters(1) := perfCounters(1) + 1.U }
+    when(incTLRead) { perfCounters(2) := perfCounters(2) + 1.U }
+    when(incTLWrite) { perfCounters(3) := perfCounters(3) + 1.U }
+    when(state === s_compute_scores || state === s_compute_scores2) { perfCounters(4) := perfCounters(4) + 1.U }
+    when(state === s_p1_row_update) { perfCounters(5) := perfCounters(5) + 1.U }
+    when(state === s_p2_row_accum) { perfCounters(6) := perfCounters(6) + 1.U }
+    when(state === s_wait_fill_q) { perfCounters(7) := perfCounters(7) + 1.U }
+    when(state === s_wait_fill_k || state === s_wait_fill_k2) { perfCounters(8) := perfCounters(8) + 1.U }
+    when(state === s_wait_fill_v) { perfCounters(9) := perfCounters(9) + 1.U }
+    when(state === s_wait_put) { perfCounters(10) := perfCounters(10) + 1.U }
+  }
+}
+
+class FpgaSafeOnlineAttention8x8RoCC(
+  opcodes: OpcodeSet,
+  val precision: Int = 16,
+  val nRows: Int = 8,
+  val nCols: Int = 8,
+  val maxK: Int = 256,
+  val fixedPointFracBits: Int = 8,
+  val accumBits: Int = 64,
+  val softmaxIntPrecision: Int = 32,
+  val softmaxFracPrecision: Int = 32,
+  val numTLSourceIds: Int = 2,
+  val clientName: String = "FpgaSafeOnlineAttention8x8RoCC"
+)(implicit p: Parameters) extends LazyRoCC(opcodes) {
+  override lazy val module = new FpgaSafeOnlineAttention8x8Impl(this)
+  override val atlNode = TLClientNode(
+    Seq(TLMasterPortParameters.v1(Seq(TLMasterParameters.v1(
+      name = clientName,
+      sourceId = IdRange(0, numTLSourceIds)
+    ))))
+  )
+}

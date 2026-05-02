@@ -53,6 +53,27 @@ class FusedAttnAccel4x4 extends Config((site, here, up) => {
   )
 })
 
+class FusedOnlineAttention8x8BF16FpgaSafe extends Config((site, here, up) => {
+  case BuildRoCC => List(
+    (p: Parameters) => {
+      val attn = LazyModule(new FpgaSafeOnlineAttention8x8RoCC(
+        precision = 16,
+        nRows = 8,
+        nCols = 8,
+        maxK = 256,
+        fixedPointFracBits = 8,
+        accumBits = 64,
+        softmaxIntPrecision = 32,
+        softmaxFracPrecision = 32,
+        numTLSourceIds = 2,
+        clientName = "FusedOnlineAttention8x8BF16FpgaSafeRoCC",
+        opcodes = OpcodeSet.custom1
+      )(p))
+      attn
+    }
+  )
+})
+
 
 class SoftmaxAccel extends Config((site, here, up) => {
   case BuildRoCC => List(
@@ -214,8 +235,8 @@ class FusedMatmulSoftmax8x8BF16FpgaSafe extends Config((site, here, up) => {
         accumBits = 64, // Keeps it simple for the ABI side.
         numTLSourceIds = 2,
         applyRowSoftmax = true,
-        softmaxIntPrecision = 12,
-        softmaxFracPrecision = 20,
+        softmaxIntPrecision = 32,
+        softmaxFracPrecision = 32,
         clientName = "FusedMatmulSoftmax8x8FpgaSafeRoCC",
         opcodes = OpcodeSet.custom1,
       )(p))
