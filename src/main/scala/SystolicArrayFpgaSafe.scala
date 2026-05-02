@@ -544,17 +544,23 @@ class SystolicArrayFpgaSafe8x8Impl(
   private val scoreScaleIntBits = 8
 
   private val kWidth = log2Ceil(maxK + 1) // 9, at which common dim
-  private val outCount = nRows * nCols // 256, 16 * 16
-  private val outputElemsPerWord = xLen / precision
-  private val outputWordCount = (outCount + outputElemsPerWord - 1) / outputElemsPerWord
-  private val outIdxWidth = log2Ceil(outputWordCount + 1)
-  private val rowIdxWidth = log2Ceil(nRows + 1)
-  private val xlenBytes = xLen / 8
-  private val beatBytes = cacheDataBits / 8
-  private val wordsPerBeat = beatBytes / xlenBytes
-  private val laneWidth = math.max(1, log2Ceil(wordsPerBeat))
+  private val outCount = nRows * nCols // 64, 8x8
+  private val outputElemsPerWord = xLen / precision // 4, packed output
+  // ceil_div(outCount, outputElemsPerWord)
+  private val outputWordCount = (outCount + outputElemsPerWord - 1) / outputElemsPerWord // 16
+  
+  // Counter registers bitwidth.
+  private val outIdxWidth = log2Ceil(outputWordCount + 1) // 5, which output words are okay
+  private val rowIdxWidth = log2Ceil(nRows + 1) // 4, which softmax row we are at
+
+  private val xlenBytes = xLen / 8 // 8
+  private val beatBytes = cacheDataBits / 8 // 16
+  private val wordsPerBeat = beatBytes / xlenBytes // 2
+  private val laneWidth = math.max(1, log2Ceil(wordsPerBeat)) // 1
   private val beatOffsetBits = log2Ceil(beatBytes)
   private val tlSourceIdxWidth = math.max(1, log2Ceil(tlSourceIds))
+  
+  // tags
   private val readTlSourceId = 0
   private val writeTlSourceId = 1
 
