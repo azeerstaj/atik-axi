@@ -6,10 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define MAX_Q_ROWS 32
+#define MAX_Q_ROWS 256
 #define MAX_KV_ROWS 256
-#define MAX_D_K 128
-#define MAX_VALUE_COLS 64
+#define MAX_D_K 256
+#define MAX_VALUE_COLS 128
 #define ATTENTION_TOLERANCE 0.25f
 
 typedef struct {
@@ -95,9 +95,14 @@ int main(void) {
       {8, 8, 16, 8},
       {8, 16, 16, 8},
       {8, 64, 64, 8},
+      {64, 64, 64, 64},
       {16, 64, 64, 16},
       {32, 128, 64, 32},
       {32, 256, 128, 64},
+      {128, 256, 128, 64},
+      {128, 256, 128, 128},
+      {256, 256, 256, 64},
+      {256, 256, 256, 128},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
   const fpga_safe_attention_workspace_t workspace =
