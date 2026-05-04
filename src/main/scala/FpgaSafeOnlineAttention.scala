@@ -53,7 +53,7 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val scoreFracBits = 2 * fixedPointFracBits
   private val scoreScaleIntBits = 8
   private val softBitWidth = softmaxIntPrecision + softmaxFracPrecision
-  private val lutEntries = 256
+  private val lutEntries = outer.softmaxRecipLutEntries
   private val lutBits = 64
   private val minBf16 = "hFF80".U(precision.W)
   private val readTlSourceId = 0
@@ -68,6 +68,7 @@ class FpgaSafeOnlineAttention8x8Impl(
   require(outputElemsPerWord == 4, "BF16 output packing expects four lanes per xLen word")
   require(accumPrec <= xLen, "accumulator must fit in xLen for software-visible counters")
   require(tlSourceIds >= 2, "one read source and one write source are required")
+  require(isPow2(lutEntries), "softmax reciprocal LUT entries must be a power of two")
   require(softmaxFracPrecision >= log2Ceil(lutEntries) - 1, "softmax frac precision too small")
   require(maxK % nCols == 0, "score cache banking expects full-width KV tiles")
   require(isPow2(scoreTiles), "score cache banking expects power-of-two tile count")
@@ -885,6 +886,7 @@ class FpgaSafeOnlineAttention8x8RoCC(
   val accumBits: Int = 64,
   val softmaxIntPrecision: Int = 32,
   val softmaxFracPrecision: Int = 32,
+  val softmaxRecipLutEntries: Int = 256,
   val numTLSourceIds: Int = 2,
   val enablePacker: Boolean = false,
   val clientName: String = "FpgaSafeOnlineAttention8x8RoCC"
