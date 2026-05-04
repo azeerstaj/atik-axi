@@ -27,10 +27,14 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val softmaxIntPrecision = outer.softmaxIntPrecision
   private val softmaxFracPrecision = outer.softmaxFracPrecision
   private val tlSourceIds = outer.numTLSourceIds
+  private val packerEnabled = outer.enablePacker
 
   private val xlenBytes = xLen / 8
   private val beatBytes = cacheDataBits / 8
+  private val elemBytes = precision / 8
   private val beatOffsetBits = log2Ceil(beatBytes)
+  private val elemOffsetBits = log2Ceil(elemBytes)
+  private val elemsPerBeat = cacheDataBits / precision
   private val wordsPerBeat = beatBytes / xlenBytes
   private val laneWidth = math.max(1, log2Ceil(wordsPerBeat))
   private val tlSourceIdxWidth = math.max(1, log2Ceil(tlSourceIds))
@@ -67,6 +71,10 @@ class FpgaSafeOnlineAttention8x8Impl(
   require(softmaxFracPrecision >= log2Ceil(lutEntries) - 1, "softmax frac precision too small")
   require(maxK % nCols == 0, "score cache banking expects full-width KV tiles")
   require(isPow2(scoreTiles), "score cache banking expects power-of-two tile count")
+  if (packerEnabled) {
+    require(cacheDataBits == precision * nRows, "hardware packer expects one 8-lane BF16 record per cache beat")
+    require(isPow2(elemBytes), "hardware packer expects power-of-two BF16 element bytes")
+  }
 
   private val qBuf = Reg(Vec(maxK, UInt(cacheDataBits.W)))
   private val kBuf = Reg(Vec(maxK, UInt(cacheDataBits.W)))
@@ -92,6 +100,8 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val dimsConfigured = RegInit(false.B)
   private val scoresReady = RegInit(false.B)
   private val applyAfterScores = RegInit(true.B)
+  private val packConfigured = RegInit(false.B)
+  private val packDimsConfigured = RegInit(false.B)
 
   private val fillIdx = RegInit(0.U(kWidth.W))
   private val computeIdx = RegInit(0.U(kWidth.W))
@@ -102,7 +112,21 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val respRd = RegInit(0.U(5.W))
   private val respData = RegInit(0.U(xLen.W))
 
-  private val states = Enum(24)
+  private val packSrcBase = RegInit(0.U(xLen.W))
+  private val packDstBase = RegInit(0.U(xLen.W))
+  private val packRows = RegInit(0.U(kWidth.W))
+  private val packCols = RegInit(0.U(kWidth.W))
+  private val packLd = RegInit(0.U(kWidth.W))
+  private val packOutStride = RegInit(0.U(kWidth.W))
+  private val packMode = RegInit(0.U(2.W))
+  private val packTileBase = RegInit(0.U(tileBaseWidth.W))
+  private val packInnerIdx = RegInit(0.U(kWidth.W))
+  private val packLane = RegInit(0.U(log2Ceil(nRows).W))
+  private val packLaneData = RegInit(VecInit(Seq.fill(nRows)(0.U(precision.W))))
+  private val packModeRowMajorTiles = 0.U(2.W)
+  private val packModeColumnTiles = 1.U(2.W)
+
+  private val states = Enum(28)
   private val s_idle = states(0)
   private val s_req_fill_q = states(1)
   private val s_wait_fill_q = states(2)
@@ -127,6 +151,10 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val s_wait_put = states(21)
   private val s_resp = states(22)
   private val s_error = states(23)
+  private val s_pack_req_read = states(24)
+  private val s_pack_wait_read = states(25)
+  private val s_pack_req_put = states(26)
+  private val s_pack_wait_put = states(27)
   private val state = RegInit(s_idle)
 
   private val numPerfCounters = 12
@@ -163,6 +191,22 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val getKBits = edgesOut.Get(readTlSourceId.U, kTileAddr(kBase, kvTileBase, fillIdx), beatLgSize)._2
   private val getVBits = edgesOut.Get(readTlSourceId.U, beatAddr(vBase, kvTileBase(kWidth - 1, 0) + fillIdx), beatLgSize)._2
 
+  private val packLaneGlobal = packTileBase + packLane.pad(tileBaseWidth)
+  private val packSrcElementIdx = Mux(
+    packMode === packModeRowMajorTiles,
+    packLaneGlobal.pad(xLen) * packLd.pad(xLen) + packInnerIdx.pad(xLen),
+    packInnerIdx.pad(xLen) * packLd.pad(xLen) + packLaneGlobal.pad(xLen)
+  )
+  private val packSrcByteAddr = packSrcBase + (packSrcElementIdx << elemOffsetBits)
+  private val packReadBeatAddr = packSrcByteAddr & ~((beatBytes - 1).U(xLen.W))
+  private val packElemLane = packSrcByteAddr(beatOffsetBits - 1, elemOffsetBits)
+  private val packReadElems = tlOut.d.bits.data.asTypeOf(Vec(elemsPerBeat, UInt(precision.W)))
+  private val packReadElem = packReadElems(packElemLane)
+  private val packWriteRecordIdx =
+    (packTileBase >> log2Ceil(nRows)).pad(xLen) * packOutStride.pad(xLen) + packInnerIdx.pad(xLen)
+  private val packWriteBeatAddr = packDstBase + packWriteRecordIdx * beatBytes.U
+  private val packGetBits = edgesOut.Get(readTlSourceId.U, packReadBeatAddr, beatLgSize)._2
+
   private val writeAddr = wordAddr(outBase, outIdx)
   private val writeLane = writeAddr(beatOffsetBits - 1, log2Ceil(xlenBytes))
   private val writeBeatAddr = writeAddr & ~((beatBytes - 1).U(xLen.W))
@@ -189,6 +233,13 @@ class FpgaSafeOnlineAttention8x8Impl(
     beatLgSize,
     putDataWords.asUInt,
     putMaskBytes.asUInt
+  )._2
+  private val packPutBits = edgesOut.Put(
+    writeTlSourceId.U,
+    packWriteBeatAddr,
+    beatLgSize,
+    packLaneData.asUInt.pad(cacheDataBits),
+    Fill(beatBytes, 1.U(1.W))
   )._2
 
   private def laneFromBeat(beat: UInt, lane: Int): UInt =
@@ -453,6 +504,42 @@ class FpgaSafeOnlineAttention8x8Impl(
       }.otherwise {
         state := s_resp
       }
+    }.elsewhen(if (packerEnabled) funct === 15.U else false.B) {
+      packSrcBase := io.cmd.bits.rs1
+      packDstBase := io.cmd.bits.rs2
+      packConfigured := true.B
+      respData := 0.U
+      state := s_resp
+    }.elsewhen(if (packerEnabled) funct === 16.U else false.B) {
+      packRows := io.cmd.bits.rs1(15, 0)(kWidth - 1, 0)
+      packCols := io.cmd.bits.rs1(31, 16)(kWidth - 1, 0)
+      packLd := io.cmd.bits.rs1(47, 32)(kWidth - 1, 0)
+      packMode := io.cmd.bits.rs1(49, 48)
+      packOutStride := io.cmd.bits.rs2(15, 0)(kWidth - 1, 0)
+      packDimsConfigured := true.B
+      respData := 0.U
+      state := s_resp
+    }.elsewhen(if (packerEnabled) funct === 17.U else false.B) {
+      incRun := true.B
+      val modeValid = packMode === packModeRowMajorTiles || packMode === packModeColumnTiles
+      val ldValid = Mux(packMode === packModeRowMajorTiles, packLd >= packCols, packLd >= packRows)
+      val dimsValid =
+        packConfigured && packDimsConfigured && modeValid && ldValid &&
+          (packRows =/= 0.U) && (packRows <= maxK.U) &&
+          (packCols =/= 0.U) && (packCols <= maxK.U) &&
+          (packOutStride >= packCols) && (packOutStride <= maxK.U)
+      respData := Mux(!packConfigured || !packDimsConfigured, 1.U, Mux(!dimsValid, 2.U, 0.U))
+      when(dimsValid) {
+        packTileBase := 0.U
+        packInnerIdx := 0.U
+        packLane := 0.U
+        for (i <- 0 until nRows) {
+          packLaneData(i) := 0.U
+        }
+        state := s_pack_req_read
+      }.otherwise {
+        state := s_resp
+      }
     }.elsewhen(funct === 5.U) {
       clearPerfCounters := true.B
       respData := 0.U
@@ -468,6 +555,74 @@ class FpgaSafeOnlineAttention8x8Impl(
     }.otherwise {
       respData := "hDEAD".U
       state := s_resp
+    }
+  }
+
+  when(state === s_pack_req_read) {
+    val laneValid = packLaneGlobal < packRows.pad(tileBaseWidth)
+    when(!laneValid) {
+      packLaneData(packLane) := 0.U
+      when(packLane === (nRows - 1).U) {
+        packLane := 0.U
+        state := s_pack_req_put
+      }.otherwise {
+        packLane := packLane + 1.U
+      }
+    }.otherwise {
+      tlOut.a.valid := true.B
+      tlOut.a.bits := packGetBits
+      when(tlOut.a.fire) {
+        incTLRead := true.B
+        state := s_pack_wait_read
+      }
+    }
+  }
+
+  when(state === s_pack_wait_read) {
+    tlOut.d.ready := true.B
+    when(tlOut.d.fire) {
+      assert(dIsReadResp && dSource === readTlSourceId.U, "online attention packer expected read response")
+      packLaneData(packLane) := packReadElem
+      when(packLane === (nRows - 1).U) {
+        packLane := 0.U
+        state := s_pack_req_put
+      }.otherwise {
+        packLane := packLane + 1.U
+        state := s_pack_req_read
+      }
+    }
+  }
+
+  when(state === s_pack_req_put) {
+    tlOut.a.valid := true.B
+    tlOut.a.bits := packPutBits
+    when(tlOut.a.fire) {
+      incTLWrite := true.B
+      state := s_pack_wait_put
+    }
+  }
+
+  when(state === s_pack_wait_put) {
+    tlOut.d.ready := true.B
+    when(tlOut.d.fire) {
+      assert(dIsWriteAck && dSource === writeTlSourceId.U, "online attention packer expected write ack")
+      val nextInnerIdx = packInnerIdx + 1.U
+      when(nextInnerIdx >= packCols) {
+        val nextTileBase = packTileBase + nRows.U
+        packInnerIdx := 0.U
+        when(nextTileBase >= packRows.pad(tileBaseWidth)) {
+          respData := 0.U
+          state := s_resp
+        }.otherwise {
+          packTileBase := nextTileBase
+          packLane := 0.U
+          state := s_pack_req_read
+        }
+      }.otherwise {
+        packInnerIdx := nextInnerIdx
+        packLane := 0.U
+        state := s_pack_req_read
+      }
     }
   }
 
@@ -731,6 +886,7 @@ class FpgaSafeOnlineAttention8x8RoCC(
   val softmaxIntPrecision: Int = 32,
   val softmaxFracPrecision: Int = 32,
   val numTLSourceIds: Int = 2,
+  val enablePacker: Boolean = false,
   val clientName: String = "FpgaSafeOnlineAttention8x8RoCC"
 )(implicit p: Parameters) extends LazyRoCC(opcodes) {
   override lazy val module = new FpgaSafeOnlineAttention8x8Impl(this)

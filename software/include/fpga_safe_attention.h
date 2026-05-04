@@ -88,6 +88,23 @@ int fpga_safe_attention_bf16(
     const fpga_safe_attention_workspace_t *workspace,
     fpga_safe_attention_stats_t *stats);
 
+int fpga_safe_attention_bf16_hwpack(
+    const uint16_t *Q,
+    int ldq,
+    const uint16_t *K,
+    int ldk,
+    const uint16_t *V,
+    int ldv,
+    int q_rows,
+    int kv_rows,
+    int d_k,
+    int value_cols,
+    uint16_t scale_bf16,
+    uint16_t *output,
+    int ldout,
+    const fpga_safe_attention_workspace_t *workspace,
+    fpga_safe_attention_stats_t *stats);
+
 #ifdef __cplusplus
 }
 #endif

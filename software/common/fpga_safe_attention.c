@@ -86,13 +86,7 @@ static int validate_workspace(
   return 1;
 }
 
-int fpga_safe_attention_bf16(
-    const uint16_t *Q,
-    int ldq,
-    const uint16_t *K_t,
-    int ldk_t,
-    const uint16_t *V,
-    int ldv,
+static int run_attention_packed(
     int q_rows,
     int kv_rows,
     int d_k,
@@ -102,64 +96,7 @@ int fpga_safe_attention_bf16(
     int ldout,
     const fpga_safe_attention_workspace_t *workspace,
     fpga_safe_attention_stats_t *stats) {
-  if (stats != 0) {
-    memset(stats, 0, sizeof(*stats));
-  }
-  if (!validate_dims(ldq, ldk_t, ldv, ldout, q_rows, kv_rows, d_k, value_cols)) {
-    return FPGA_SAFE_ATTN_ERR_BAD_DIMS;
-  }
-  if (!validate_workspace(workspace, q_rows, kv_rows, d_k, value_cols) ||
-      (q_rows > 0 && d_k > 0 && Q == 0) ||
-      (kv_rows > 0 && d_k > 0 && K_t == 0) ||
-      (kv_rows > 0 && value_cols > 0 && V == 0) ||
-      (q_rows > 0 && value_cols > 0 && output == 0)) {
-    return FPGA_SAFE_ATTN_ERR_WORKSPACE;
-  }
-  if (q_rows == 0 || value_cols == 0) {
-    return FPGA_SAFE_ATTN_OK;
-  }
-
   const int measure = (stats != 0);
-  const uint64_t total_start = measure ? ws_read_cycles() : 0;
-
-  int rc = ws_gemm8_pack_a_bf16(
-      Q,
-      ldq,
-      q_rows,
-      d_k,
-      workspace->q_tiles,
-      workspace->max_q_rows,
-      workspace->max_d_k,
-      measure ? &stats->q_pack_cycles : 0);
-  if (rc != WS_GEMM_OK) {
-    return FPGA_SAFE_ATTN_ERR_PACK;
-  }
-
-  rc = ws_gemm8_pack_b_bf16(
-      K_t,
-      ldk_t,
-      kv_rows,
-      d_k,
-      workspace->k_tiles,
-      workspace->max_kv_rows,
-      workspace->max_d_k,
-      measure ? &stats->k_pack_cycles : 0);
-  if (rc != WS_GEMM_OK) {
-    return FPGA_SAFE_ATTN_ERR_PACK;
-  }
-
-  rc = ws_gemm8_pack_b_bf16(
-      V,
-      ldv,
-      value_cols,
-      kv_rows,
-      workspace->v_tiles,
-      workspace->max_value_cols,
-      workspace->max_kv_rows,
-      measure ? &stats->v_pack_cycles : 0);
-  if (rc != WS_GEMM_OK) {
-    return FPGA_SAFE_ATTN_ERR_PACK;
-  }
 
   for (int m0 = 0; m0 < q_rows; m0 += FPGA_SAFE_ATTN_TILE_ROWS) {
     const int tile_q_rows = min_int(FPGA_SAFE_ATTN_TILE_ROWS, q_rows - m0);
@@ -219,9 +156,208 @@ int fpga_safe_attention_bf16(
     }
   }
 
-  if (measure && stats->hw_e2e_cycles == 0) {
-    stats->hw_e2e_cycles = ws_read_cycles() - total_start;
+  return FPGA_SAFE_ATTN_OK;
+}
+
+static int hw_pack_tiles(
+    const uint16_t *src,
+    int rows,
+    int cols,
+    int ld,
+    uint64_t *dst,
+    int out_stride,
+    int mode,
+    uint64_t *pack_cycles) {
+  uint64_t start = 0;
+  if (pack_cycles != 0) {
+    *pack_cycles = 0;
+    start = ws_read_cycles();
   }
 
-  return FPGA_SAFE_ATTN_OK;
+  uint64_t rc = ws_attn_pack_set_addrs(src, dst);
+  if (rc != 0) {
+    return FPGA_SAFE_ATTN_ERR_PACK;
+  }
+  rc = ws_attn_pack_set_dims(rows, cols, ld, out_stride, mode);
+  if (rc != 0) {
+    return FPGA_SAFE_ATTN_ERR_PACK;
+  }
+  rc = ws_attn_pack_run();
+  if (pack_cycles != 0) {
+    *pack_cycles = ws_read_cycles() - start;
+  }
+  return rc == 0 ? FPGA_SAFE_ATTN_OK : FPGA_SAFE_ATTN_ERR_PACK;
+}
+
+int fpga_safe_attention_bf16(
+    const uint16_t *Q,
+    int ldq,
+    const uint16_t *K_t,
+    int ldk_t,
+    const uint16_t *V,
+    int ldv,
+    int q_rows,
+    int kv_rows,
+    int d_k,
+    int value_cols,
+    uint16_t scale_bf16,
+    uint16_t *output,
+    int ldout,
+    const fpga_safe_attention_workspace_t *workspace,
+    fpga_safe_attention_stats_t *stats) {
+  if (stats != 0) {
+    memset(stats, 0, sizeof(*stats));
+  }
+  if (!validate_dims(ldq, ldk_t, ldv, ldout, q_rows, kv_rows, d_k, value_cols)) {
+    return FPGA_SAFE_ATTN_ERR_BAD_DIMS;
+  }
+  if (!validate_workspace(workspace, q_rows, kv_rows, d_k, value_cols) ||
+      (q_rows > 0 && d_k > 0 && Q == 0) ||
+      (kv_rows > 0 && d_k > 0 && K_t == 0) ||
+      (kv_rows > 0 && value_cols > 0 && V == 0) ||
+      (q_rows > 0 && value_cols > 0 && output == 0)) {
+    return FPGA_SAFE_ATTN_ERR_WORKSPACE;
+  }
+  if (q_rows == 0 || value_cols == 0) {
+    return FPGA_SAFE_ATTN_OK;
+  }
+
+  const int measure = (stats != 0);
+
+  int rc = ws_gemm8_pack_a_bf16(
+      Q,
+      ldq,
+      q_rows,
+      d_k,
+      workspace->q_tiles,
+      workspace->max_q_rows,
+      workspace->max_d_k,
+      measure ? &stats->q_pack_cycles : 0);
+  if (rc != WS_GEMM_OK) {
+    return FPGA_SAFE_ATTN_ERR_PACK;
+  }
+
+  rc = ws_gemm8_pack_b_bf16(
+      K_t,
+      ldk_t,
+      kv_rows,
+      d_k,
+      workspace->k_tiles,
+      workspace->max_kv_rows,
+      workspace->max_d_k,
+      measure ? &stats->k_pack_cycles : 0);
+  if (rc != WS_GEMM_OK) {
+    return FPGA_SAFE_ATTN_ERR_PACK;
+  }
+
+  rc = ws_gemm8_pack_b_bf16(
+      V,
+      ldv,
+      value_cols,
+      kv_rows,
+      workspace->v_tiles,
+      workspace->max_value_cols,
+      workspace->max_kv_rows,
+      measure ? &stats->v_pack_cycles : 0);
+  if (rc != WS_GEMM_OK) {
+    return FPGA_SAFE_ATTN_ERR_PACK;
+  }
+
+  return run_attention_packed(
+      q_rows,
+      kv_rows,
+      d_k,
+      value_cols,
+      scale_bf16,
+      output,
+      ldout,
+      workspace,
+      stats);
+}
+
+int fpga_safe_attention_bf16_hwpack(
+    const uint16_t *Q,
+    int ldq,
+    const uint16_t *K,
+    int ldk,
+    const uint16_t *V,
+    int ldv,
+    int q_rows,
+    int kv_rows,
+    int d_k,
+    int value_cols,
+    uint16_t scale_bf16,
+    uint16_t *output,
+    int ldout,
+    const fpga_safe_attention_workspace_t *workspace,
+    fpga_safe_attention_stats_t *stats) {
+  if (stats != 0) {
+    memset(stats, 0, sizeof(*stats));
+  }
+  if (q_rows < 0 || kv_rows < 0 || d_k < 0 || value_cols < 0 ||
+      ldq < d_k || ldk < d_k || ldv < value_cols || ldout < value_cols ||
+      (q_rows > 0 && (kv_rows == 0 || d_k == 0 || value_cols == 0))) {
+    return FPGA_SAFE_ATTN_ERR_BAD_DIMS;
+  }
+  if (!validate_workspace(workspace, q_rows, kv_rows, d_k, value_cols) ||
+      (q_rows > 0 && d_k > 0 && Q == 0) ||
+      (kv_rows > 0 && d_k > 0 && K == 0) ||
+      (kv_rows > 0 && value_cols > 0 && V == 0) ||
+      (q_rows > 0 && value_cols > 0 && output == 0)) {
+    return FPGA_SAFE_ATTN_ERR_WORKSPACE;
+  }
+  if (q_rows == 0 || value_cols == 0) {
+    return FPGA_SAFE_ATTN_OK;
+  }
+
+  const int measure = (stats != 0);
+  int rc = hw_pack_tiles(
+      Q,
+      q_rows,
+      d_k,
+      ldq,
+      workspace->q_tiles,
+      workspace->max_d_k,
+      SA_ATTN_PACK_MODE_ROW_MAJOR_TILES,
+      measure ? &stats->q_pack_cycles : 0);
+  if (rc != FPGA_SAFE_ATTN_OK) {
+    return rc;
+  }
+
+  rc = hw_pack_tiles(
+      K,
+      kv_rows,
+      d_k,
+      ldk,
+      workspace->k_tiles,
+      workspace->max_d_k,
+      SA_ATTN_PACK_MODE_ROW_MAJOR_TILES,
+      measure ? &stats->k_pack_cycles : 0);
+  if (rc != FPGA_SAFE_ATTN_OK) {
+    return rc;
+  }
+
+  rc = hw_pack_tiles(
+      V,
+      value_cols,
+      kv_rows,
+      ldv,
+      workspace->v_tiles,
+      workspace->max_kv_rows,
+      SA_ATTN_PACK_MODE_COLUMN_TILES,
+      measure ? &stats->v_pack_cycles : 0);
+  if (rc != FPGA_SAFE_ATTN_OK) {
+    return rc;
+  }
+
+  return run_attention_packed(
+      q_rows,
+      kv_rows,
+      d_k,
+      value_cols,
+      scale_bf16,
+      output,
+      ldout,
+      workspace,
+      stats);
 }

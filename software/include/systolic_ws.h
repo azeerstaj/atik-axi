@@ -22,6 +22,12 @@
 #define SA_FUNCT_ATTN_RUN 12
 #define SA_FUNCT_ATTN_PRECOMPUTE_SCORES 13
 #define SA_FUNCT_ATTN_APPLY_CACHED 14
+#define SA_FUNCT_ATTN_PACK_SET_ADDRS 15
+#define SA_FUNCT_ATTN_PACK_SET_DIMS 16
+#define SA_FUNCT_ATTN_PACK_RUN 17
+
+#define SA_ATTN_PACK_MODE_ROW_MAJOR_TILES 0
+#define SA_ATTN_PACK_MODE_COLUMN_TILES 1
 
 enum {
   WS_PERF_BUSY_CYCLES = 0,
@@ -177,6 +183,43 @@ static inline uint64_t ws_attn_apply_cached(void) {
   uint64_t rd = 0;
   asm volatile("fence rw, rw" ::: "memory");
   ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_ATTN_APPLY_CACHED);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_pack_set_addrs(
+    const uint16_t *src,
+    uint64_t *dst) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, src, dst, SA_FUNCT_ATTN_PACK_SET_ADDRS);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_pack_set_dims(
+    int rows,
+    int cols,
+    int ld,
+    int out_stride,
+    int mode) {
+  const uint64_t packed_dims =
+      (((uint64_t)(uint16_t)mode) << 48) |
+      (((uint64_t)(uint16_t)ld) << 32) |
+      (((uint64_t)(uint16_t)cols) << 16) |
+      (uint64_t)(uint16_t)rows;
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(
+      SA_OPCODE, rd, packed_dims, (uint64_t)(uint16_t)out_stride, SA_FUNCT_ATTN_PACK_SET_DIMS);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_pack_run(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_ATTN_PACK_RUN);
   asm volatile("fence rw, rw" ::: "memory");
   return rd;
 }

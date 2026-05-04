@@ -11,6 +11,9 @@
 #define MAX_D_K 256
 #define MAX_VALUE_COLS 128
 #define ATTENTION_TOLERANCE 0.25f
+#ifndef FPGA_SAFE_ATTN_USE_HW_PACKER
+#define FPGA_SAFE_ATTN_USE_HW_PACKER 0
+#endif
 
 typedef struct {
   int q_rows;
@@ -117,7 +120,8 @@ int main(void) {
           MAX_VALUE_COLS);
 
   srand(17);
-  printf("=== FPGA-Safe 8x8 Online Attention BF16 Test ===\n");
+  printf("=== FPGA-Safe 8x8 Online Attention BF16 %s Test ===\n",
+         FPGA_SAFE_ATTN_USE_HW_PACKER ? "HW-Packer" : "SW-Packer");
   printf("CSV_HEADER,case,q_rows,kv_rows,d_k,value_cols,sw_cycles,hw_total_cycles,hw_accel_cycles,hw_score_cycles,hw_value_cycles,hw_rc,raw_hw_rc,speedup_x100,max_abs_diff_x100000,mismatches\n");
 
   int total_mismatches = 0;
@@ -139,7 +143,9 @@ int main(void) {
         v_matrix[r][c] = float_to_bf16(rand_float());
       }
     }
-    transpose_k(tc.kv_rows, tc.d_k);
+    if (!FPGA_SAFE_ATTN_USE_HW_PACKER) {
+      transpose_k(tc.kv_rows, tc.d_k);
+    }
 
     for (int r = 0; r < tc.q_rows; r++) {
       for (int c = 0; c < tc.value_cols; c++) {
@@ -152,7 +158,26 @@ int main(void) {
     const uint64_t sw_cycles = ws_read_cycles() - sw_start;
 
     fpga_safe_attention_stats_t stats;
-    const int hw_rc = fpga_safe_attention_bf16(
+    const int hw_rc =
+#if FPGA_SAFE_ATTN_USE_HW_PACKER
+        fpga_safe_attention_bf16_hwpack(
+            &q_matrix[0][0],
+            MAX_D_K,
+            &k_matrix[0][0],
+            MAX_D_K,
+            &v_matrix[0][0],
+            MAX_VALUE_COLS,
+            tc.q_rows,
+            tc.kv_rows,
+            tc.d_k,
+            tc.value_cols,
+            scale_bf16,
+            &out_matrix[0][0],
+            MAX_VALUE_COLS,
+            &workspace,
+            &stats);
+#else
+        fpga_safe_attention_bf16(
         &q_matrix[0][0],
         MAX_D_K,
         &k_t_matrix[0][0],
@@ -168,6 +193,7 @@ int main(void) {
         MAX_VALUE_COLS,
         &workspace,
         &stats);
+#endif
 
     int mismatches = 0;
     float max_abs_diff = 0.0f;
