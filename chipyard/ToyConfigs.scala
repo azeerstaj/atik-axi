@@ -26,6 +26,7 @@ class FusedOnlineAttention8x8BF16FpgaSafeConfig extends Config(
 
 class FusedOnlineAttention8x8BF16FpgaSafePackerConfig extends Config(
   new FusedOnlineAttention8x8BF16FpgaSafePacker ++
+    new freechips.rocketchip.subsystem.WithoutTLMonitors ++
     new freechips.rocketchip.rocket.WithNHugeCores(1) ++
     new chipyard.config.WithSystemBusWidth(128) ++
     new chipyard.config.AbstractConfig
