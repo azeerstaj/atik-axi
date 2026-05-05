@@ -26,6 +26,7 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val accumPrec = outer.accumBits
   private val softmaxIntPrecision = outer.softmaxIntPrecision
   private val softmaxFracPrecision = outer.softmaxFracPrecision
+  private val useSoftmaxExpLut = outer.useSoftmaxExpLut
   private val tlSourceIds = outer.numTLSourceIds
   private val packerEnabled = outer.enablePacker
 
@@ -56,6 +57,10 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val softBitWidth = softmaxIntPrecision + softmaxFracPrecision
   private val lutEntries = outer.softmaxRecipLutEntries
   private val lutBits = 64
+  private val expLutEntries = outer.softmaxExpLutEntries
+  private val expLutRange = outer.softmaxExpLutRange
+  private val expLutIndexBits = log2Ceil(expLutEntries)
+  private val expLutInputShift = scoreFracBits + log2Ceil(expLutRange) - expLutIndexBits
   private val minScoreFixed = (-(BigInt(1) << (accumPrec - 1))).S(accumPrec.W)
   private val readTlSourceId = 0
   private val writeTlSourceId = 1
@@ -71,6 +76,9 @@ class FpgaSafeOnlineAttention8x8Impl(
   require(tlSourceIds >= 2, "one read source and one write source are required")
   require(pvProductShift >= 0, "PV product must not need left-shift widening")
   require(isPow2(lutEntries), "softmax reciprocal LUT entries must be a power of two")
+  require(isPow2(expLutEntries), "softmax exp LUT entries must be a power of two")
+  require(isPow2(expLutRange), "softmax exp LUT range must be a power of two")
+  require(expLutInputShift >= 0, "softmax exp LUT index needs more entries than score fixed-point resolution supports")
   require(softmaxFracPrecision >= log2Ceil(lutEntries) - 1, "softmax frac precision too small")
   require(maxK % nCols == 0, "score cache banking expects full-width KV tiles")
   require(isPow2(scoreTiles), "score cache banking expects power-of-two tile count")
@@ -277,12 +285,6 @@ class FpgaSafeOnlineAttention8x8Impl(
   }
 
   private val softLatchedScores = Reg(Vec(nCols, SInt(accumPrec.W)))
-  private val softMaxExp = Module(new BFloat16Exp)
-  private val softMaxFixed = Module(new BFloat16ToFixed(softmaxIntPrecision, softmaxFracPrecision))
-  private val softVecExps = Seq.fill(nCols)(Module(new BFloat16Exp))
-  private val softVecFixedPs = Seq.fill(nCols)(Module(new BFloat16ToFixed(softmaxIntPrecision, softmaxFracPrecision)))
-  private val softMaxDiffBf16 = Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits))
-  private val softVecDiffBf16 = Seq.fill(nCols)(Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits)))
   private val softVecFixed = Wire(Vec(nCols, UInt(softBitWidth.W)))
   private val softProbFixed = Wire(Vec(nCols, UInt(softBitWidth.W)))
   private val rowMaxRead = rowMax(softRowIdx)
@@ -308,16 +310,39 @@ class FpgaSafeOnlineAttention8x8Impl(
     Mux(nonZero, invRaw.pad(softBitWidth)(softBitWidth - 1, 0), 0.U)
   }
 
+  private val expLut = VecInit(Seq.tabulate(expLutEntries) { i =>
+    val x = BigDecimal(i) * BigDecimal(expLutRange) / BigDecimal(math.max(expLutEntries - 1, 1))
+    val scaled = (BigDecimal(math.exp(-x.toDouble)) * BigDecimal(2).pow(softmaxFracPrecision))
+      .setScale(0, RoundingMode.HALF_UP)
+      .toBigInt
+    scaled.U(softBitWidth.W)
+  })
+  private val expRangeFixed = (BigInt(expLutRange) << scoreFracBits).U((accumPrec + 1).W)
+  private def expFixedLut(diff: SInt): UInt = {
+    val diffWide = diff.pad(accumPrec + 1).asSInt
+    val mag = Mux(diffWide >= 0.S, 0.U((accumPrec + 1).W), (-diffWide).asUInt)
+    val rawIndex = (mag >> expLutInputShift)(expLutIndexBits - 1, 0)
+    Mux(mag >= expRangeFixed, 0.U(softBitWidth.W), expLut(rawIndex))
+  }
+
   private def fixedMax(a: SInt, b: SInt): SInt = Mux(a > b, a, b)
   private val softVecMaxFixed = softLatchedScores.reduceTree((a, b) => fixedMax(a, b))
   private val softGlobalMaxFixed = fixedMax(softVecMaxFixed, rowMaxRead)
   private val softMaxDiffFixed = rowMaxRead - softGlobalMaxFixed
-  softMaxDiffBf16.io.in := softMaxDiffFixed(accumPrec - 1, 0).asSInt
-  softMaxExp.io.in := softMaxDiffBf16.io.out
-  softMaxFixed.io.in := softMaxExp.io.out
+  private val softMaxFixed = if (useSoftmaxExpLut) {
+    expFixedLut(softMaxDiffFixed)
+  } else {
+    val diffBf16 = Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits))
+    val exp = Module(new BFloat16Exp)
+    val fixed = Module(new BFloat16ToFixed(softmaxIntPrecision, softmaxFracPrecision))
+    diffBf16.io.in := softMaxDiffFixed(accumPrec - 1, 0).asSInt
+    exp.io.in := diffBf16.io.out
+    fixed.io.in := exp.io.out
+    fixed.io.out
+  }
 
   private val softOne = (1.U(softBitWidth.W) << softmaxFracPrecision)(softBitWidth - 1, 0)
-  private val softMaxFixedClamped = Mux(softMaxFixed.io.out > softOne, softOne, softMaxFixed.io.out)
+  private val softMaxFixedClamped = Mux(softMaxFixed > softOne, softOne, softMaxFixed)
   private val softProdDenomFull = rowDenomRead * softMaxFixedClamped
   private val softProdDenom = (softProdDenomFull >> softmaxFracPrecision)(softBitWidth - 1, 0)
   private val softSubBase = Mux(state === s_p2_row_accum, rowMaxRead, softGlobalMaxFixed)
@@ -325,10 +350,17 @@ class FpgaSafeOnlineAttention8x8Impl(
 
   for (i <- 0 until nCols) {
     val diff = softLatchedScores(i) - softSubBase
-    softVecDiffBf16(i).io.in := diff(accumPrec - 1, 0).asSInt
-    softVecExps(i).io.in := softVecDiffBf16(i).io.out
-    softVecFixedPs(i).io.in := softVecExps(i).io.out
-    softVecFixed(i) := softVecFixedPs(i).io.out
+    if (useSoftmaxExpLut) {
+      softVecFixed(i) := expFixedLut(diff)
+    } else {
+      val diffBf16 = Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits))
+      val exp = Module(new BFloat16Exp)
+      val fixed = Module(new BFloat16ToFixed(softmaxIntPrecision, softmaxFracPrecision))
+      diffBf16.io.in := diff(accumPrec - 1, 0).asSInt
+      exp.io.in := diffBf16.io.out
+      fixed.io.in := exp.io.out
+      softVecFixed(i) := fixed.io.out
+    }
     val normFull = softVecFixed(i) * softInvSum
     val normFixed = (normFull >> softmaxFracPrecision)(softBitWidth - 1, 0)
     softProbFixed(i) := normFixed
@@ -885,6 +917,9 @@ class FpgaSafeOnlineAttention8x8RoCC(
   val softmaxIntPrecision: Int = 32,
   val softmaxFracPrecision: Int = 32,
   val softmaxRecipLutEntries: Int = 256,
+  val useSoftmaxExpLut: Boolean = false,
+  val softmaxExpLutEntries: Int = 1024,
+  val softmaxExpLutRange: Int = 16,
   val numTLSourceIds: Int = 2,
   val enablePacker: Boolean = false,
   val clientName: String = "FpgaSafeOnlineAttention8x8RoCC"
