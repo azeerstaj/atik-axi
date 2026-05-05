@@ -86,7 +86,7 @@ class FusedOnlineAttention8x8BF16FpgaSafePacker extends Config((site, here, up) 
         accumBits = 64,
         softmaxIntPrecision = 10,
         softmaxFracPrecision = 54,
-        softmaxRecipLutEntries = 1024,
+        softmaxRecipLutEntries = 64, // 1024 
         numTLSourceIds = 2,
         enablePacker = true,
         clientName = "FusedOnlineAttention8x8BF16FpgaSafePackerRoCC",
