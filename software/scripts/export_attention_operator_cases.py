@@ -5,15 +5,10 @@ from __future__ import annotations
 
 import argparse
 import math
-import random
-import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import torch
-except ModuleNotFoundError:
-    torch = None
+import torch
 
 
 @dataclass(frozen=True)
@@ -36,32 +31,32 @@ DEFAULT_CASES = (
 )
 
 
-def float_to_bf16_bits(value: float) -> int:
-    bits = struct.unpack(">I", struct.pack(">f", float(value)))[0]
-    lsb = (bits >> 16) & 1
-    return ((bits + 0x7FFF + lsb) >> 16) & 0xFFFF
-
-
-def bf16_bits_to_float(bits: int) -> float:
-    value = (bits & 0xFFFF) << 16
-    return struct.unpack(">f", struct.pack(">I", value))[0]
-
-
 def bf16_bits(tensor) -> list[int]:
     bf16 = tensor.detach().to(torch.bfloat16).contiguous().cpu()
     return [int(x) & 0xFFFF for x in bf16.view(torch.int16).reshape(-1).tolist()]
 
 
 def bf16_scalar_bits(value: float) -> int:
-    if torch is None:
-        return float_to_bf16_bits(value)
     return bf16_bits(torch.tensor([value], dtype=torch.float32))[0]
 
 
 def bf16_scalar_float(value: float) -> float:
-    if torch is None:
-        return bf16_bits_to_float(float_to_bf16_bits(value))
     return torch.tensor([value], dtype=torch.float32).to(torch.bfloat16).float().item()
+
+
+def bf16_bit_to_float(bits: int) -> float:
+    signed_bits = bits if bits < 0x8000 else bits - 0x10000
+    return (
+        torch.tensor([signed_bits], dtype=torch.int16)
+        .view(torch.bfloat16)
+        .float()
+        .item()
+    )
+
+
+def bf16_bits_to_float_list(bits: list[int], count: int = 5) -> str:
+    values = [bf16_bit_to_float(x) for x in bits[:count]]
+    return "[" + ",".join(f"{x:.6f}" for x in values) + "]"
 
 
 def emit_array(out, name: str, values: list[int]) -> None:
@@ -72,7 +67,30 @@ def emit_array(out, name: str, values: list[int]) -> None:
     out.write("};\n\n")
 
 
-def make_case_torch(case: AttentionCase):
+def print_case_samples(case: AttentionCase, data: dict[str, list[int] | int]) -> None:
+    q_head = bf16_bits_to_float_list(data["q"])
+    k_head = bf16_bits_to_float_list(data["k"])
+    v_head = bf16_bits_to_float_list(data["v"])
+    ref_head = bf16_bits_to_float_list(data["ref"])
+    ref_mid_idx = (case.q_rows // 2) * case.value_cols + (case.value_cols // 2)
+    ref_mid = bf16_bit_to_float(data["ref"][ref_mid_idx])
+    ref_last = bf16_bit_to_float(data["ref"][-1])
+
+    print(
+        "SAMPLE,\n"
+        f"{case.name},\n"
+        f"scale_bf16=0x{data['scale_bf16']:04x},\n"
+        f"q_head={q_head},\n"
+        f"k_head={k_head},\n"
+        f"v_head={v_head},\n"
+        f"ref_head={ref_head},\n"
+        f"ref[mid,mid]={ref_mid:.6f},\n"
+        f"ref[last,last]={ref_last:.6f}\n"
+        f"\n\n"
+    )
+
+
+def make_case(case: AttentionCase):
     generator = torch.Generator(device="cpu")
     generator.manual_seed(case.seed)
 
@@ -101,55 +119,6 @@ def make_case_torch(case: AttentionCase):
     }
 
 
-def make_case_stdlib(case: AttentionCase):
-    rng = random.Random(case.seed)
-    q_bits = [float_to_bf16_bits(rng.gauss(0.0, 1.0)) for _ in range(case.q_rows * case.d_k)]
-    k_bits = [float_to_bf16_bits(rng.gauss(0.0, 1.0)) for _ in range(case.kv_rows * case.d_k)]
-    v_bits = [
-        float_to_bf16_bits(rng.gauss(0.0, 1.0))
-        for _ in range(case.kv_rows * case.value_cols)
-    ]
-    q = [bf16_bits_to_float(x) for x in q_bits]
-    k = [bf16_bits_to_float(x) for x in k_bits]
-    v = [bf16_bits_to_float(x) for x in v_bits]
-
-    scale_value = 1.0 / math.sqrt(float(case.d_k))
-    scale_bf16 = float_to_bf16_bits(scale_value)
-    scale_float = bf16_bits_to_float(scale_bf16)
-
-    ref_bits: list[int] = []
-    for qr in range(case.q_rows):
-        scores = []
-        for kv in range(case.kv_rows):
-            dot = 0.0
-            for d in range(case.d_k):
-                dot += q[qr * case.d_k + d] * k[kv * case.d_k + d]
-            scores.append(dot * scale_float)
-        row_max = max(scores)
-        exps = [math.exp(score - row_max) for score in scores]
-        denom = sum(exps)
-        probs = [x / denom for x in exps]
-        for vc in range(case.value_cols):
-            acc = 0.0
-            for kv in range(case.kv_rows):
-                acc += probs[kv] * v[kv * case.value_cols + vc]
-            ref_bits.append(float_to_bf16_bits(acc))
-
-    return {
-        "q": q_bits,
-        "k": k_bits,
-        "v": v_bits,
-        "ref": ref_bits,
-        "scale_bf16": scale_bf16,
-    }
-
-
-def make_case(case: AttentionCase):
-    if torch is not None:
-        return make_case_torch(case)
-    return make_case_stdlib(case)
-
-
 def write_assets(cases: tuple[AttentionCase, ...], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     header = out_dir / "attention_operator_cases.h"
@@ -161,6 +130,10 @@ def write_assets(cases: tuple[AttentionCase, ...], out_dir: Path) -> None:
     max_value_cols = max(case.value_cols for case in cases)
 
     generated = [(case, make_case(case)) for case in cases]
+
+    print("SAMPLE_HEADER,name,scale_bf16,q00,k00,v00,ref00,ref_mid,ref_last")
+    for case, data in generated:
+        print_case_samples(case, data)
 
     with header.open("w", encoding="utf-8") as out:
         out.write("#ifndef TOYROCC_GENERATED_ATTENTION_OPERATOR_CASES_H\n")
@@ -231,8 +204,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     write_assets(DEFAULT_CASES, args.out_dir)
-    backend = "torch" if torch is not None else "stdlib"
-    print(f"wrote attention operator cases to {args.out_dir} using {backend} backend")
+    print(f"wrote attention operator cases to {args.out_dir} using PyTorch backend")
 
 
 if __name__ == "__main__":

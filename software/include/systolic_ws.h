@@ -25,6 +25,8 @@
 #define SA_FUNCT_ATTN_PACK_SET_ADDRS 15
 #define SA_FUNCT_ATTN_PACK_SET_DIMS 16
 #define SA_FUNCT_ATTN_PACK_RUN 17
+#define SA_FUNCT_ATTN_DEBUG_SET_ADDRS 18
+#define SA_FUNCT_ATTN_DEBUG_DUMP_INTERMEDIATES 19
 
 #define SA_ATTN_PACK_MODE_ROW_MAJOR_TILES 0
 #define SA_ATTN_PACK_MODE_COLUMN_TILES 1
@@ -220,6 +222,25 @@ static inline uint64_t ws_attn_pack_run(void) {
   uint64_t rd = 0;
   asm volatile("fence rw, rw" ::: "memory");
   ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_ATTN_PACK_RUN);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_debug_set_addrs(
+    int64_t *score_words,
+    uint64_t *prob_words) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(
+      SA_OPCODE, rd, score_words, prob_words, SA_FUNCT_ATTN_DEBUG_SET_ADDRS);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_attn_debug_dump_intermediates(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_ATTN_DEBUG_DUMP_INTERMEDIATES);
   asm volatile("fence rw, rw" ::: "memory");
   return rd;
 }

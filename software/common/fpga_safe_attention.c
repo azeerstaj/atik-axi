@@ -361,3 +361,166 @@ int fpga_safe_attention_bf16_hwpack(
       workspace,
       stats);
 }
+
+int fpga_safe_attention_bf16_hwpack_debug_intermediates(
+    const uint16_t *Q,
+    int ldq,
+    const uint16_t *K,
+    int ldk,
+    const uint16_t *V,
+    int ldv,
+    int q_rows,
+    int kv_rows,
+    int d_k,
+    int value_cols,
+    uint16_t scale_bf16,
+    uint16_t *output,
+    int ldout,
+    int64_t *score_fixed,
+    uint64_t *prob_fixed,
+    int ldintermediate,
+    const fpga_safe_attention_workspace_t *workspace,
+    fpga_safe_attention_stats_t *stats) {
+  if (stats != 0) {
+    memset(stats, 0, sizeof(*stats));
+  }
+  if (q_rows < 0 || kv_rows < 0 || d_k < 0 || value_cols < 0 ||
+      ldq < d_k || ldk < d_k || ldv < value_cols || ldout < value_cols ||
+      ldintermediate < kv_rows ||
+      (q_rows > 0 && (kv_rows == 0 || d_k == 0 || value_cols == 0))) {
+    return FPGA_SAFE_ATTN_ERR_BAD_DIMS;
+  }
+  if (!validate_workspace(workspace, q_rows, kv_rows, d_k, value_cols) ||
+      (q_rows > 0 && d_k > 0 && Q == 0) ||
+      (kv_rows > 0 && d_k > 0 && K == 0) ||
+      (kv_rows > 0 && value_cols > 0 && V == 0) ||
+      (q_rows > 0 && value_cols > 0 && output == 0) ||
+      (q_rows > 0 && kv_rows > 0 && (score_fixed == 0 || prob_fixed == 0))) {
+    return FPGA_SAFE_ATTN_ERR_WORKSPACE;
+  }
+  if (q_rows == 0 || value_cols == 0) {
+    return FPGA_SAFE_ATTN_OK;
+  }
+
+  const int measure = (stats != 0);
+  int rc = hw_pack_tiles(
+      Q,
+      q_rows,
+      d_k,
+      ldq,
+      workspace->q_tiles,
+      workspace->max_d_k,
+      SA_ATTN_PACK_MODE_ROW_MAJOR_TILES,
+      measure ? &stats->q_pack_cycles : 0);
+  if (rc != FPGA_SAFE_ATTN_OK) {
+    return rc;
+  }
+
+  rc = hw_pack_tiles(
+      K,
+      kv_rows,
+      d_k,
+      ldk,
+      workspace->k_tiles,
+      workspace->max_d_k,
+      SA_ATTN_PACK_MODE_ROW_MAJOR_TILES,
+      measure ? &stats->k_pack_cycles : 0);
+  if (rc != FPGA_SAFE_ATTN_OK) {
+    return rc;
+  }
+
+  rc = hw_pack_tiles(
+      V,
+      value_cols,
+      kv_rows,
+      ldv,
+      workspace->v_tiles,
+      workspace->max_kv_rows,
+      SA_ATTN_PACK_MODE_COLUMN_TILES,
+      measure ? &stats->v_pack_cycles : 0);
+  if (rc != FPGA_SAFE_ATTN_OK) {
+    return rc;
+  }
+
+  for (int m0 = 0; m0 < q_rows; m0 += FPGA_SAFE_ATTN_TILE_ROWS) {
+    const int tile_q_rows = min_int(FPGA_SAFE_ATTN_TILE_ROWS, q_rows - m0);
+    const uint64_t *q_tile = attn_q_tile_ptr(workspace->q_tiles, workspace->max_d_k, m0);
+
+    (void)ws_attn_set_qk_addrs(q_tile, workspace->k_tiles);
+    (void)ws_attn_set_dims(
+        tile_q_rows,
+        kv_rows,
+        d_k,
+        min_int(FPGA_SAFE_ATTN_TILE_COLS, value_cols));
+    (void)ws_attn_set_scale_bf16(scale_bf16);
+
+    const uint64_t score_start = measure ? ws_read_cycles() : 0;
+    const uint64_t score_rc = ws_attn_precompute_scores();
+    if (measure) {
+      const uint64_t score_cycles = ws_read_cycles() - score_start;
+      stats->score_cycles += score_cycles;
+      stats->hw_e2e_cycles += score_cycles;
+      stats->raw_hw_rc = score_rc;
+    }
+    if (score_rc != 0) {
+      return FPGA_SAFE_ATTN_ERR_RUN;
+    }
+
+    const uint64_t debug_set_rc = ws_attn_debug_set_addrs(
+        score_fixed + m0 * ldintermediate,
+        prob_fixed + m0 * ldintermediate);
+    if (debug_set_rc != 0) {
+      if (measure) {
+        stats->raw_hw_rc = debug_set_rc;
+      }
+      return FPGA_SAFE_ATTN_ERR_RUN;
+    }
+
+    const uint64_t debug_start = measure ? ws_read_cycles() : 0;
+    const uint64_t debug_rc = ws_attn_debug_dump_intermediates();
+    if (measure) {
+      const uint64_t debug_cycles = ws_read_cycles() - debug_start;
+      stats->debug_dump_cycles += debug_cycles;
+      stats->hw_e2e_cycles += debug_cycles;
+      stats->raw_hw_rc = debug_rc;
+    }
+    if (debug_rc != 0) {
+      return FPGA_SAFE_ATTN_ERR_RUN;
+    }
+
+    for (int n0 = 0; n0 < value_cols; n0 += FPGA_SAFE_ATTN_TILE_COLS) {
+      const int tile_value_cols = min_int(FPGA_SAFE_ATTN_TILE_COLS, value_cols - n0);
+      const uint64_t *v_tile = attn_b_tile_ptr(workspace->v_tiles, workspace->max_kv_rows, n0);
+
+      (void)ws_attn_set_vout_addrs(v_tile, workspace->out_words);
+      (void)ws_attn_set_dims(tile_q_rows, kv_rows, d_k, tile_value_cols);
+
+      const uint64_t value_start = measure ? ws_read_cycles() : 0;
+      const uint64_t value_rc = ws_attn_apply_cached();
+      if (measure) {
+        const uint64_t value_cycles = ws_read_cycles() - value_start;
+        stats->value_cycles += value_cycles;
+        stats->hw_e2e_cycles += value_cycles;
+        stats->raw_hw_rc = value_rc;
+      }
+      if (value_rc != 0) {
+        return FPGA_SAFE_ATTN_ERR_RUN;
+      }
+
+      const uint64_t copy_start = measure ? ws_read_cycles() : 0;
+      copy_output_tile(
+          workspace->out_words,
+          tile_q_rows,
+          tile_value_cols,
+          output,
+          ldout,
+          m0,
+          n0);
+      if (measure) {
+        stats->copy_out_cycles += ws_read_cycles() - copy_start;
+      }
+    }
+  }
+
+  return FPGA_SAFE_ATTN_OK;
+}
