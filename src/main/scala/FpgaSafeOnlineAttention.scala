@@ -51,11 +51,12 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val outputWordCount = (outCount + outputElemsPerWord - 1) / outputElemsPerWord
   private val outIdxWidth = log2Ceil(outputWordCount + 1)
   private val scoreFracBits = 2 * fixedPointFracBits
+  private val pvProductShift = softmaxFracPrecision + fixedPointFracBits - scoreFracBits
   private val scoreScaleIntBits = 8
   private val softBitWidth = softmaxIntPrecision + softmaxFracPrecision
   private val lutEntries = outer.softmaxRecipLutEntries
   private val lutBits = 64
-  private val minBf16 = "hFF80".U(precision.W)
+  private val minScoreFixed = (-(BigInt(1) << (accumPrec - 1))).S(accumPrec.W)
   private val readTlSourceId = 0
   private val writeTlSourceId = 1
 
@@ -68,6 +69,7 @@ class FpgaSafeOnlineAttention8x8Impl(
   require(outputElemsPerWord == 4, "BF16 output packing expects four lanes per xLen word")
   require(accumPrec <= xLen, "accumulator must fit in xLen for software-visible counters")
   require(tlSourceIds >= 2, "one read source and one write source are required")
+  require(pvProductShift >= 0, "PV product must not need left-shift widening")
   require(isPow2(lutEntries), "softmax reciprocal LUT entries must be a power of two")
   require(softmaxFracPrecision >= log2Ceil(lutEntries) - 1, "softmax frac precision too small")
   require(maxK % nCols == 0, "score cache banking expects full-width KV tiles")
@@ -82,9 +84,9 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val vBuf = Reg(Vec(nCols, UInt(cacheDataBits.W)))
   private val scoreAccum = RegInit(VecInit(Seq.fill(nRows)(VecInit(Seq.fill(nCols)(0.S(accumPrec.W))))))
   private val outAccum = RegInit(VecInit(Seq.fill(nRows)(VecInit(Seq.fill(nCols)(0.S(accumPrec.W))))))
-  private val rowMax = RegInit(VecInit(Seq.fill(nRows)(minBf16)))
+  private val rowMax = RegInit(VecInit(Seq.fill(nRows)(minScoreFixed)))
   private val rowDenom = RegInit(VecInit(Seq.fill(nRows)(0.U(softBitWidth.W))))
-  private val scoreBanks = Seq.fill(nCols)(SyncReadMem(nRows * scoreTiles, UInt(precision.W)))
+  private val scoreBanks = Seq.fill(nCols)(SyncReadMem(nRows * scoreTiles, SInt(accumPrec.W)))
   private val packedStoreWords = Reg(Vec(outputWordCount, UInt(xLen.W)))
 
   private val qBase = RegInit(0.U(xLen.W))
@@ -182,7 +184,7 @@ class FpgaSafeOnlineAttention8x8Impl(
   }
 
   private val scoreReadAddr = scoreBankAddr(softRowIdx, kvTileBase)
-  private val scoreReadData = Wire(Vec(nCols, UInt(precision.W)))
+  private val scoreReadData = Wire(Vec(nCols, SInt(accumPrec.W)))
   for (c <- 0 until nCols) {
     scoreReadData(c) := scoreBanks(c).read(scoreReadAddr, state === s_p2_row_load)
   }
@@ -264,30 +266,25 @@ class FpgaSafeOnlineAttention8x8Impl(
   scaleConv.io.in := scaleBf16
   private val scoreScaleFixed = scaleConv.io.out
 
-  private val scoreBf16 = Wire(Vec(nRows, Vec(nCols, UInt(precision.W))))
+  private val scoreFixed = Wire(Vec(nRows, Vec(nCols, SInt(accumPrec.W))))
   for (r <- 0 until nRows) {
     for (c <- 0 until nCols) {
       val scaledWide = (scoreAccum(r)(c) * scoreScaleFixed).asSInt
       val scaledShifted = (scaledWide >> scoreFracBits).asSInt
       val scaledTrimmed = scaledShifted(accumPrec - 1, 0).asSInt
-      val conv = Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits))
-      conv.io.in := scaledTrimmed
-      scoreBf16(r)(c) := Mux(c.U < activeKvCols, conv.io.out, minBf16)
+      scoreFixed(r)(c) := Mux(c.U < activeKvCols, scaledTrimmed, minScoreFixed)
     }
   }
 
-  private val softLatchedScores = Reg(Vec(nCols, UInt(precision.W)))
-  private val softVecMax = Module(new BFloat16VectorMax(nCols))
-  private val softGlobalMax = Module(new BFloat16Max)
-  private val softMaxSub = Module(new BFloat16Sub)
+  private val softLatchedScores = Reg(Vec(nCols, SInt(accumPrec.W)))
   private val softMaxExp = Module(new BFloat16Exp)
   private val softMaxFixed = Module(new BFloat16ToFixed(softmaxIntPrecision, softmaxFracPrecision))
-  private val softVecSubs = Seq.fill(nCols)(Module(new BFloat16Sub))
   private val softVecExps = Seq.fill(nCols)(Module(new BFloat16Exp))
   private val softVecFixedPs = Seq.fill(nCols)(Module(new BFloat16ToFixed(softmaxIntPrecision, softmaxFracPrecision)))
-  private val softVecNormOut = Seq.fill(nCols)(Module(new UIntFixedToBFloat16(softBitWidth, softmaxFracPrecision)))
+  private val softMaxDiffBf16 = Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits))
+  private val softVecDiffBf16 = Seq.fill(nCols)(Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits)))
   private val softVecFixed = Wire(Vec(nCols, UInt(softBitWidth.W)))
-  private val softProbBf16 = Wire(Vec(nCols, UInt(precision.W)))
+  private val softProbFixed = Wire(Vec(nCols, UInt(softBitWidth.W)))
   private val rowMaxRead = rowMax(softRowIdx)
   private val rowDenomRead = rowDenom(softRowIdx)
 
@@ -311,39 +308,34 @@ class FpgaSafeOnlineAttention8x8Impl(
     Mux(nonZero, invRaw.pad(softBitWidth)(softBitWidth - 1, 0), 0.U)
   }
 
-  softVecMax.io.in := softLatchedScores.asUInt
-  softGlobalMax.io.in_1 := softVecMax.io.out
-  softGlobalMax.io.in_2 := rowMaxRead
-  softMaxSub.io.in_1 := rowMaxRead
-  softMaxSub.io.in_2 := softGlobalMax.io.out
-  softMaxExp.io.in := softMaxSub.io.out
+  private def fixedMax(a: SInt, b: SInt): SInt = Mux(a > b, a, b)
+  private val softVecMaxFixed = softLatchedScores.reduceTree((a, b) => fixedMax(a, b))
+  private val softGlobalMaxFixed = fixedMax(softVecMaxFixed, rowMaxRead)
+  private val softMaxDiffFixed = rowMaxRead - softGlobalMaxFixed
+  softMaxDiffBf16.io.in := softMaxDiffFixed(accumPrec - 1, 0).asSInt
+  softMaxExp.io.in := softMaxDiffBf16.io.out
   softMaxFixed.io.in := softMaxExp.io.out
 
   private val softOne = (1.U(softBitWidth.W) << softmaxFracPrecision)(softBitWidth - 1, 0)
   private val softMaxFixedClamped = Mux(softMaxFixed.io.out > softOne, softOne, softMaxFixed.io.out)
   private val softProdDenomFull = rowDenomRead * softMaxFixedClamped
   private val softProdDenom = (softProdDenomFull >> softmaxFracPrecision)(softBitWidth - 1, 0)
-  private val softSubBase = Mux(state === s_p2_row_accum, rowMaxRead, softGlobalMax.io.out)
+  private val softSubBase = Mux(state === s_p2_row_accum, rowMaxRead, softGlobalMaxFixed)
   private val softInvSum = reciprocalFixed(rowDenomRead)
 
   for (i <- 0 until nCols) {
-    softVecSubs(i).io.in_1 := softLatchedScores(i)
-    softVecSubs(i).io.in_2 := softSubBase
-    softVecExps(i).io.in := softVecSubs(i).io.out
+    val diff = softLatchedScores(i) - softSubBase
+    softVecDiffBf16(i).io.in := diff(accumPrec - 1, 0).asSInt
+    softVecExps(i).io.in := softVecDiffBf16(i).io.out
     softVecFixedPs(i).io.in := softVecExps(i).io.out
     softVecFixed(i) := softVecFixedPs(i).io.out
     val normFull = softVecFixed(i) * softInvSum
     val normFixed = (normFull >> softmaxFracPrecision)(softBitWidth - 1, 0)
-    softVecNormOut(i).io.in := normFixed
-    softProbBf16(i) := softVecNormOut(i).io.out
+    softProbFixed(i) := normFixed
   }
   private val softVecSum = softVecFixed.reduceTree(_ + _)
   private val softDenomNext = softVecSum + softProdDenom
 
-  private val probFixed = Seq.fill(nCols)(Module(new BFloat16ToSIntFixed(precision - fixedPointFracBits, fixedPointFracBits)))
-  for (c <- 0 until nCols) {
-    probFixed(c).io.in := softProbBf16(c)
-  }
   private val vFixed = Seq.fill(nCols, nCols)(Module(new BFloat16ToSIntFixed(precision - fixedPointFracBits, fixedPointFracBits)))
   for (kv <- 0 until nCols) {
     for (vc <- 0 until nCols) {
@@ -439,7 +431,7 @@ class FpgaSafeOnlineAttention8x8Impl(
         softRowIdx := 0.U
         outIdx := 0.U
         for (r <- 0 until nRows) {
-          rowMax(r) := minBf16
+          rowMax(r) := minScoreFixed
           rowDenom(r) := 0.U
           for (c <- 0 until nCols) {
             scoreAccum(r)(c) := 0.S
@@ -468,7 +460,7 @@ class FpgaSafeOnlineAttention8x8Impl(
         softRowIdx := 0.U
         outIdx := 0.U
         for (r <- 0 until nRows) {
-          rowMax(r) := minBf16
+          rowMax(r) := minScoreFixed
           rowDenom(r) := 0.U
           for (c <- 0 until nCols) {
             scoreAccum(r)(c) := 0.S
@@ -743,7 +735,7 @@ class FpgaSafeOnlineAttention8x8Impl(
 
   when(state === s_p1_row_load) {
     for (c <- 0 until nCols) {
-      softLatchedScores(c) := scoreBf16(softRowIdx)(c)
+      softLatchedScores(c) := scoreFixed(softRowIdx)(c)
     }
     state := s_p1_row_update
   }
@@ -754,7 +746,7 @@ class FpgaSafeOnlineAttention8x8Impl(
 
   when(state === s_p2_score_latch) {
     for (c <- 0 until nCols) {
-      softLatchedScores(c) := Mux(c.U < activeKvCols, scoreReadData(c), minBf16)
+      softLatchedScores(c) := Mux(c.U < activeKvCols, scoreReadData(c), minScoreFixed)
     }
     state := s_p2_row_accum
   }
@@ -768,7 +760,7 @@ class FpgaSafeOnlineAttention8x8Impl(
           scoreBanks(c).write(writeAddr, softLatchedScores(c))
         }
       }
-      rowMax(softRowIdx) := softGlobalMax.io.out
+      rowMax(softRowIdx) := softGlobalMaxFixed
       rowDenom(softRowIdx) := softDenomNext
     }
     when(softRowIdx + 1.U >= qRows) {
@@ -796,9 +788,15 @@ class FpgaSafeOnlineAttention8x8Impl(
     when(softRowIdx < qRows) {
       for (vc <- 0 until nCols) {
         val terms = Seq.tabulate(nCols) { kv =>
-          val product = (probFixed(kv).io.out * vFixed(kv)(vc).io.out).asSInt
+          val product = (softProbFixed(kv).asSInt * vFixed(kv)(vc).io.out).asSInt
+          val shiftedProduct =
+            if (pvProductShift == 0) product else (product >> pvProductShift).asSInt
           val addend = Wire(SInt(accumPrec.W))
-          addend := Mux(kv.U < activeKvCols && vc.U < valueCols, product, 0.S)
+          addend := Mux(
+            kv.U < activeKvCols && vc.U < valueCols,
+            shiftedProduct.pad(accumPrec).asSInt,
+            0.S(accumPrec.W)
+          )
           addend
         }
         val tileSum = terms.reduce(_ + _)
