@@ -5,7 +5,8 @@ FusedOnlineAttention8x8BF16FpgaSafePackerExpLutDebug:
 
 FusedOnlineAttention8x8BF16FpgaSafePackerExpLut:
     # agfi: agfi-04498a15b23a53ebd
-    agfi: agfi-0d8086ddbf0f73961
+    # agfi: agfi-0d8086ddbf0f73961
+    agfi: agfi-0944de976804a416c
     deploy_quintuplet_override: null
     custom_runtime_config: null
 

@@ -311,7 +311,7 @@ class FpgaSafeOnlineAttention8x8Impl(
     val msb = (softBitWidth - 1).U - PriorityEncoder(Reverse(sum))
     val shift = Mux(nonZero, msb - softmaxFracPrecision.U, 0.U)
     val mant = sum >> shift
-    val lutIndex = mant(softmaxFracPrecision, softmaxFracPrecision - softLutIndexBits + 1)
+    val lutIndex = mant(softmaxFracPrecision - 1, softmaxFracPrecision - softLutIndexBits)
     val lutVal = softLut(lutIndex)
     val scaleDown = lutBits - 1 - softmaxFracPrecision
     val lutScaled = if (scaleDown >= 0) (lutVal >> scaleDown) else (lutVal << (-scaleDown))
