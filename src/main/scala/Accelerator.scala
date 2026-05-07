@@ -150,6 +150,28 @@ class FusedOnlineAttention8x8BF16FpgaSafePackerExpLutDebug extends Config((site,
   )
 })
 
+class AttentionSoftmaxDebug extends Config((site, here, up) => {
+  case BuildRoCC => List(
+    (p: Parameters) => {
+      val dbg = LazyModule(new AttentionSoftmaxDebugRoCC(
+        nCols = 8,
+        maxK = 256,
+        fixedPointFracBits = 8,
+        accumBits = 64,
+        softmaxIntPrecision = 10,
+        softmaxFracPrecision = 54,
+        softmaxRecipLutEntries = 64,
+        useSoftmaxExpLut = true,
+        softmaxExpLutEntries = 2048,
+        softmaxExpLutRange = 16,
+        clientName = "AttentionSoftmaxDebugRoCC",
+        opcodes = OpcodeSet.custom1
+      )(p))
+      dbg
+    }
+  )
+})
+
 
 class SoftmaxAccel extends Config((site, here, up) => {
   case BuildRoCC => List(

@@ -27,6 +27,18 @@
 #define SA_FUNCT_ATTN_PACK_RUN 17
 #define SA_FUNCT_ATTN_DEBUG_READ_SCORE 18
 #define SA_FUNCT_ATTN_DEBUG_READ_PROB 19
+#define SA_FUNCT_SOFTDBG_SET_LEN 20
+#define SA_FUNCT_SOFTDBG_WRITE_SCORE 21
+#define SA_FUNCT_SOFTDBG_RUN 22
+#define SA_FUNCT_SOFTDBG_READ_SCORE 23
+#define SA_FUNCT_SOFTDBG_READ_DIFF 24
+#define SA_FUNCT_SOFTDBG_READ_EXP 25
+#define SA_FUNCT_SOFTDBG_READ_DENOM 26
+#define SA_FUNCT_SOFTDBG_READ_INV_DENOM 27
+#define SA_FUNCT_SOFTDBG_READ_PROB 28
+#define SA_FUNCT_SOFTDBG_READ_ROW_MAX 29
+#define SA_FUNCT_SOFTDBG_READ_TILE_DENOM 30
+#define SA_FUNCT_SOFTDBG_READ_TILE_MAX 31
 
 #define SA_ATTN_PACK_MODE_ROW_MAJOR_TILES 0
 #define SA_ATTN_PACK_MODE_COLUMN_TILES 1
@@ -246,6 +258,103 @@ static inline uint64_t ws_attn_debug_read_prob(int row, int col) {
   ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, packed_index, 0, SA_FUNCT_ATTN_DEBUG_READ_PROB);
   asm volatile("fence rw, rw" ::: "memory");
   return rd;
+}
+
+static inline uint64_t ws_softdbg_set_len(int len) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)(uint16_t)len, 0, SA_FUNCT_SOFTDBG_SET_LEN);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_softdbg_write_score(int idx, int64_t score_fixed) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(
+      SA_OPCODE, rd, (uint64_t)(uint16_t)idx, (uint64_t)score_fixed, SA_FUNCT_SOFTDBG_WRITE_SCORE);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_softdbg_run(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_SOFTDBG_RUN);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline int64_t ws_softdbg_read_score(int idx) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)(uint16_t)idx, 0, SA_FUNCT_SOFTDBG_READ_SCORE);
+  asm volatile("fence rw, rw" ::: "memory");
+  return (int64_t)rd;
+}
+
+static inline int64_t ws_softdbg_read_diff(int idx) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)(uint16_t)idx, 0, SA_FUNCT_SOFTDBG_READ_DIFF);
+  asm volatile("fence rw, rw" ::: "memory");
+  return (int64_t)rd;
+}
+
+static inline uint64_t ws_softdbg_read_exp(int idx) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)(uint16_t)idx, 0, SA_FUNCT_SOFTDBG_READ_EXP);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_softdbg_read_denom(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_SOFTDBG_READ_DENOM);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_softdbg_read_inv_denom(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_SOFTDBG_READ_INV_DENOM);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline uint64_t ws_softdbg_read_prob(int idx) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)(uint16_t)idx, 0, SA_FUNCT_SOFTDBG_READ_PROB);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline int64_t ws_softdbg_read_row_max(void) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, 0, 0, SA_FUNCT_SOFTDBG_READ_ROW_MAX);
+  asm volatile("fence rw, rw" ::: "memory");
+  return (int64_t)rd;
+}
+
+static inline uint64_t ws_softdbg_read_tile_denom(int tile_idx) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)(uint16_t)tile_idx, 0, SA_FUNCT_SOFTDBG_READ_TILE_DENOM);
+  asm volatile("fence rw, rw" ::: "memory");
+  return rd;
+}
+
+static inline int64_t ws_softdbg_read_tile_max(int tile_idx) {
+  uint64_t rd = 0;
+  asm volatile("fence rw, rw" ::: "memory");
+  ROCC_INSTRUCTION_DSS(SA_OPCODE, rd, (uint64_t)(uint16_t)tile_idx, 0, SA_FUNCT_SOFTDBG_READ_TILE_MAX);
+  asm volatile("fence rw, rw" ::: "memory");
+  return (int64_t)rd;
 }
 
 static inline uint64_t ws_sa_read_counter(uint64_t counter_id) {

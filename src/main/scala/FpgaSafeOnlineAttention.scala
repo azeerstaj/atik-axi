@@ -358,9 +358,11 @@ class FpgaSafeOnlineAttention8x8Impl(
   private val softInvSum = reciprocalFixed(rowDenomRead)
 
   for (i <- 0 until nCols) {
+    val laneValid = i.U < activeKvCols
     val diff = softLatchedScores(i) - softSubBase
+    val expValue = Wire(UInt(softBitWidth.W))
     if (useSoftmaxExpLut) {
-      softVecFixed(i) := expFixedLut(diff)
+      expValue := expFixedLut(diff)
     } else {
       val diffBf16 = Module(new SIntFixedToBFloat16(accumPrec, scoreFracBits))
       val exp = Module(new BFloat16Exp)
@@ -368,11 +370,12 @@ class FpgaSafeOnlineAttention8x8Impl(
       diffBf16.io.in := diff(accumPrec - 1, 0).asSInt
       exp.io.in := diffBf16.io.out
       fixed.io.in := exp.io.out
-      softVecFixed(i) := fixed.io.out
+      expValue := fixed.io.out
     }
+    softVecFixed(i) := Mux(laneValid, expValue, 0.U)
     val normFull = softVecFixed(i) * softInvSum
     val normFixed = (normFull >> softmaxFracPrecision)(softBitWidth - 1, 0)
-    softProbFixed(i) := normFixed
+    softProbFixed(i) := Mux(laneValid, normFixed, 0.U)
   }
   private val softVecSum = softVecFixed.reduceTree(_ + _)
   private val softDenomNext = softVecSum + softProdDenom
