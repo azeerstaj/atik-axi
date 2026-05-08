@@ -7,14 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define GEMM_MAX_M 32
-#define GEMM_MAX_N 32
-#define GEMM_MAX_K 64
+#define GEMM_MAX_M 128
+#define GEMM_MAX_N 128
+#define GEMM_MAX_K 128
 
-#define ATTN_MAX_Q_ROWS 32
-#define ATTN_MAX_KV_ROWS 64
-#define ATTN_MAX_D_K 64
-#define ATTN_MAX_VALUE_COLS 32
+#define ATTN_MAX_Q_ROWS 128
+#define ATTN_MAX_KV_ROWS 256
+#define ATTN_MAX_D_K 128
+#define ATTN_MAX_VALUE_COLS 128
 #define ATTN_TOLERANCE 0.25f
 
 typedef struct {
@@ -76,8 +76,16 @@ static void sw_gemm_bf16_fixed_ref(int M, int N, int K) {
 static int run_gemm_section(void) {
   const gemm_case_t tests[] = {
       {8, 8, 16},
+      {8, 32, 64},
+      {32, 8, 64},
       {16, 16, 32},
+      {16, 64, 64},
+      {64, 16, 64},
       {32, 32, 64},
+      {64, 64, 64},
+      {128, 64, 64},
+      {64, 128, 64},
+      {128, 128, 128},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
   const ws_gemm_workspace_t workspace =
@@ -91,7 +99,7 @@ static int run_gemm_section(void) {
 
   int total_mismatches = 0;
   printf("=== Dual-RoCC Matmul custom0 Sanity ===\n");
-  printf("GEMM_HEADER,case,M,N,K,hw_cycles,hw_rc,mismatches\n");
+  printf("GEMM_HEADER,case,M,N,K,sw_cycles,hw_e2e_cycles,pack_a_cycles,pack_b_cycles,preload_cycles,run_cycles,copy_out_cycles,hw_rc,speedup_x100,mismatches\n");
 
   srand(3);
   for (int t = 0; t < ntests; t++) {
@@ -107,7 +115,9 @@ static int run_gemm_section(void) {
       }
     }
 
+    const uint64_t sw_start = ws_read_cycles();
     sw_gemm_bf16_fixed_ref(tc.M, tc.N, tc.K);
+    const uint64_t sw_cycles = ws_read_cycles() - sw_start;
 
     ws_gemm_stats_t stats;
     const int hw_rc = ws_gemm8_bf16(
@@ -145,13 +155,22 @@ static int run_gemm_section(void) {
     }
 
     total_mismatches += mismatches;
-    printf("GEMM_DATA,%d,%d,%d,%d,%lu,%d,%d\n",
+    const uint64_t speedup_x100 =
+        stats.hw_e2e_cycles == 0 ? 0 : (sw_cycles * 100u) / stats.hw_e2e_cycles;
+    printf("GEMM_DATA,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%d,%lu,%d\n",
            t,
            tc.M,
            tc.N,
            tc.K,
+           (unsigned long)sw_cycles,
            (unsigned long)stats.hw_e2e_cycles,
+           (unsigned long)stats.stage.pack_a_cycles,
+           (unsigned long)stats.stage.pack_b_cycles,
+           (unsigned long)stats.stage.preload_cycles,
+           (unsigned long)stats.stage.run_cycles,
+           (unsigned long)stats.stage.copy_out_cycles,
            hw_rc,
+           (unsigned long)speedup_x100,
            mismatches);
   }
 
@@ -207,8 +226,17 @@ static void sw_attention_reference(
 static int run_attention_section(void) {
   const attention_case_t tests[] = {
       {8, 8, 16, 8},
+      {8, 9, 16, 8},
+      {8, 16, 16, 8},
       {8, 64, 64, 8},
+      {16, 64, 64, 16},
       {32, 64, 64, 32},
+      {32, 128, 64, 32},
+      {32, 256, 128, 64},
+      {64, 128, 64, 64},
+      {128, 128, 64, 64},
+      {128, 256, 128, 64},
+      {128, 256, 128, 128},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
   const fpga_safe_attention_workspace_t workspace =
@@ -224,7 +252,7 @@ static int run_attention_section(void) {
 
   int total_mismatches = 0;
   printf("=== Dual-RoCC Attention custom1 Sanity ===\n");
-  printf("ATTN_HEADER,case,q_rows,kv_rows,d_k,value_cols,hw_total_cycles,hw_accel_cycles,hw_score_cycles,hw_value_cycles,hw_rc,raw_hw_rc,max_abs_diff_x100000,mismatches\n");
+  printf("ATTN_HEADER,case,q_rows,kv_rows,d_k,value_cols,sw_cycles,hw_total_cycles,hw_e2e_cycles,q_pack_cycles,k_pack_cycles,v_pack_cycles,hw_score_cycles,hw_value_cycles,copy_out_cycles,hw_rc,raw_hw_rc,speedup_x100,max_abs_diff_x100000,mismatches\n");
 
   srand(17);
   for (int t = 0; t < ntests; t++) {
@@ -251,7 +279,9 @@ static int run_attention_section(void) {
       }
     }
 
+    const uint64_t sw_start = ws_read_cycles();
     sw_attention_reference(tc.q_rows, tc.kv_rows, tc.d_k, tc.value_cols, scale);
+    const uint64_t sw_cycles = ws_read_cycles() - sw_start;
 
     fpga_safe_attention_stats_t stats;
     const int hw_rc = fpga_safe_attention_bf16_hwpack(
@@ -306,18 +336,26 @@ static int run_attention_section(void) {
         stats.v_pack_cycles +
         stats.hw_e2e_cycles +
         stats.copy_out_cycles;
-    printf("ATTN_DATA,%d,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%d,%lu,%lu,%d\n",
+    const uint64_t speedup_x100 =
+        stats.hw_e2e_cycles == 0 ? 0 : (sw_cycles * 100u) / stats.hw_e2e_cycles;
+    printf("ATTN_DATA,%d,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%d,%lu,%lu,%lu,%d\n",
            t,
            tc.q_rows,
            tc.kv_rows,
            tc.d_k,
            tc.value_cols,
+           (unsigned long)sw_cycles,
            (unsigned long)hw_total_cycles,
            (unsigned long)stats.hw_e2e_cycles,
+           (unsigned long)stats.q_pack_cycles,
+           (unsigned long)stats.k_pack_cycles,
+           (unsigned long)stats.v_pack_cycles,
            (unsigned long)stats.score_cycles,
            (unsigned long)stats.value_cycles,
+           (unsigned long)stats.copy_out_cycles,
            hw_rc,
            (unsigned long)stats.raw_hw_rc,
+           (unsigned long)speedup_x100,
            (unsigned long)(max_abs_diff * 100000.0f),
            mismatches);
   }
