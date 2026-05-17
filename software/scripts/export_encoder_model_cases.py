@@ -37,6 +37,7 @@ BERT_CASES = (
     EncoderModelCase("bert_tiny_l2_s64_d128_h4_ff256", 64, 128, 4, 256, 2, 502),
     EncoderModelCase("bert_small_l2_s128_d256_h4_ff256", 128, 256, 4, 256, 2, 503),
     EncoderModelCase("bert_max_l4_s256_d256_h4_ff256", 256, 256, 4, 256, 4, 504),
+    EncoderModelCase("bert_512_l2_s128_d512_h8_ff512", 128, 512, 8, 512, 2, 505, 0.25, 0.015625),
 )
 
 VIT_CASES = (
@@ -44,6 +45,7 @@ VIT_CASES = (
     EncoderModelCase("vit_tiny_l2_s65_d128_h4_ff256", 65, 128, 4, 256, 2, 602),
     EncoderModelCase("vit_patch_l2_s197_d256_h4_ff256", 197, 256, 4, 256, 2, 603),
     EncoderModelCase("vit_max_l4_s197_d256_h4_ff256", 197, 256, 4, 256, 4, 604),
+    EncoderModelCase("vit_512_l2_s197_d512_h8_ff512", 197, 512, 8, 512, 2, 605, 0.25, 0.015625),
 )
 
 
@@ -95,8 +97,8 @@ def flat_layer_params(params: list[torch.Tensor]) -> torch.Tensor:
 def make_case(case: EncoderModelCase) -> dict[str, list[int] | int]:
     if case.d_model % case.n_heads != 0:
         raise ValueError(f"{case.name}: d_model must divide n_heads")
-    if case.head_dim > 256 or case.hidden_dim > 256 or case.d_model > 256:
-        raise ValueError(f"{case.name}: dimensions exceed current RTL maxK=256")
+    if case.head_dim > 512 or case.hidden_dim > 512 or case.d_model > 512:
+        raise ValueError(f"{case.name}: dimensions exceed current RTL maxK=512")
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(case.seed)

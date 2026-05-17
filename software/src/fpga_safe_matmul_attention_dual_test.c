@@ -9,11 +9,11 @@
 
 #define GEMM_MAX_M 128
 #define GEMM_MAX_N 128
-#define GEMM_MAX_K 128
+#define GEMM_MAX_K 512
 
 #define ATTN_MAX_Q_ROWS 128
-#define ATTN_MAX_KV_ROWS 256
-#define ATTN_MAX_D_K 128
+#define ATTN_MAX_KV_ROWS 512
+#define ATTN_MAX_D_K 512
 #define ATTN_MAX_VALUE_COLS 128
 #define ATTN_TOLERANCE 0.25f
 
@@ -86,6 +86,8 @@ static int run_gemm_section(void) {
       {128, 64, 64},
       {64, 128, 64},
       {128, 128, 128},
+      {64, 64, 512},
+      {128, 128, 512},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
   const ws_gemm_workspace_t workspace =
@@ -238,6 +240,10 @@ static int run_attention_section(void) {
       {128, 128, 64, 64},
       {128, 256, 128, 64},
       {128, 256, 128, 128},
+      {32, 512, 128, 64},
+      {64, 512, 256, 64},
+      {64, 512, 512, 64},
+      {128, 512, 512, 128},
   };
   const int ntests = (int)(sizeof(tests) / sizeof(tests[0]));
   const fpga_safe_attention_workspace_t workspace =

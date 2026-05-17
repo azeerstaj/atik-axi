@@ -42,6 +42,8 @@ DEFAULT_CASES = (
     TinyBertCase("tinybert_l4_s128_d128_h4_ff256_cls2", 128, 128, 4, 256, 4, 703),
     TinyBertCase("tinybert_l4_s128_d256_h4_ff256_cls2", 128, 256, 4, 256, 4, 704),
     TinyBertCase("tinybert_max_l4_s256_d256_h4_ff256_cls2", 256, 256, 4, 256, 4, 705),
+    TinyBertCase("tinybert_512_l2_s128_d512_h8_ff512_cls2", 128, 512, 8, 512, 2, 706, embedding_scale=0.25, weight_scale=0.015625),
+    TinyBertCase("tinybert_512_l4_s256_d512_h8_ff512_cls2", 256, 512, 8, 512, 4, 707, embedding_scale=0.25, weight_scale=0.015625),
 )
 
 
@@ -104,8 +106,8 @@ def flat_layer_params(params: list[torch.Tensor]) -> torch.Tensor:
 def make_case(case: TinyBertCase) -> dict[str, list[int] | int]:
     if case.d_model % case.n_heads != 0:
         raise ValueError(f"{case.name}: d_model must be divisible by n_heads")
-    if case.d_model > 256 or case.hidden_dim > 256 or case.head_dim > 256:
-        raise ValueError(f"{case.name}: dimensions exceed current RTL maxK=256")
+    if case.d_model > 512 or case.hidden_dim > 512 or case.head_dim > 512:
+        raise ValueError(f"{case.name}: dimensions exceed current RTL maxK=512")
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(case.seed)

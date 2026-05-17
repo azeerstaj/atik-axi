@@ -38,7 +38,7 @@ fi
 echo "✅ Found Source AFI: $SOURCE_AFI"
 
 # Step 2: Copy the FPGA image and sanitize the output
-echo "[2/3] Copying image to $TARGET_REGION (this may take a moment)..."
+echo "[2/3] Copying image to $TARGET_REGION..."
 RAW_NEW_AFI=$(aws ec2 copy-fpga-image \
     --source-region $SOURCE_REGION \
     --source-fpga-image-id "$SOURCE_AFI" \
@@ -56,6 +56,27 @@ if [ -z "$NEW_AFI" ]; then
 fi
 echo "✅ Image copy initiated! New regional AFI: $NEW_AFI"
 
+# Step 2.5: WAIT for the AFI to become available
+echo "⏳ Waiting for the new AFI to become 'available' (this usually takes several minutes)..."
+while true; do
+    STATE=$(aws ec2 describe-fpga-images \
+        --fpga-image-ids "$NEW_AFI" \
+        --region $TARGET_REGION \
+        --query 'FpgaImages[0].State.Code' \
+        --output text)
+        
+    if [ "$STATE" == "available" ]; then
+        echo "✅ AFI is now available!"
+        break
+    elif [ "$STATE" == "failed" ]; then
+        echo "❌ Error: AFI copy failed in AWS."
+        exit 1
+    else
+        echo "   Current state: $STATE. Checking again in 30 seconds..."
+        sleep 30
+    fi
+done
+
 # Step 3: Modify permissions
 echo "[3/3] Sharing copied image with Account ID: $TARGET_ACCOUNT..."
 aws ec2 modify-fpga-image-attribute \
@@ -69,5 +90,5 @@ echo "🎉 SUCCESS: Porting process complete!"
 echo "================================================="
 echo ""
 echo "👉 NEXT STEPS ON YOUR CENTRAL MACHINE ($TARGET_REGION):"
-echo "Run this command to check if it is ready:"
+echo "Run this command to double check the status:"
 echo "  aws ec2 describe-fpga-images --filters Name=fpga-image-global-id,Values=$AGFI_ID --region $TARGET_REGION --query 'FpgaImages[0].State.Code' --output text"

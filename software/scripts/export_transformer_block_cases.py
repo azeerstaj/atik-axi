@@ -35,6 +35,8 @@ DEFAULT_CASES = (
     TransformerBlockCase("seq64_dm128_h4", 64, 128, 4, 305),
     TransformerBlockCase("seq64_dm256_h4", 64, 256, 4, 306),
     TransformerBlockCase("seq128_dm256_h4", 128, 256, 4, 307),
+    TransformerBlockCase("seq64_dm512_h8", 64, 512, 8, 308, 0.25, 0.03125),
+    TransformerBlockCase("seq128_dm512_h8", 128, 512, 8, 309, 0.25, 0.03125),
 )
 
 
@@ -81,8 +83,8 @@ def uniform_scaled(
 def make_case(case: TransformerBlockCase) -> dict[str, list[int] | int]:
     if case.d_model % case.n_heads != 0:
         raise ValueError(f"{case.name}: d_model must be divisible by n_heads")
-    if case.head_dim > 256:
-        raise ValueError(f"{case.name}: head_dim exceeds hardware maxK")
+    if case.head_dim > 512:
+        raise ValueError(f"{case.name}: head_dim exceeds hardware maxK=512")
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(case.seed)

@@ -50,6 +50,9 @@ DEFAULT_CASES = (
     AttentionCase("max_shape_stress", 256, 256, 256, 128, 105),
     AttentionCase("max_shape_stress_s025", 256, 256, 256, 128, 105, 0.25, 0.25),
     AttentionCase("max_shape_stress_s05", 256, 256, 256, 128, 105, 0.5, 0.5),
+    AttentionCase("max512_decode_tile_s025", 8, 512, 64, 64, 221, 0.25, 0.25),
+    AttentionCase("max512_kv_tile_s025", 64, 512, 256, 64, 222, 0.25, 0.25),
+    AttentionCase("max512_dk_tile_s025", 32, 512, 512, 64, 223, 0.25, 0.25),
 )
 
 

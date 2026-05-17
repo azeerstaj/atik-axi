@@ -1,7 +1,9 @@
-=== Dual-RoCC Tiny-BERT Inference Test ===
-OPCODE_INFO,matmul=0,attention=1
-CSV_HEADER,case,name,seq_len,d_model,n_heads,head_dim,hidden_dim,n_layers,vocab_size,num_classes,cpu_cycles,hw_e2e_cycles,embedding_cycles,qkv_proj_cycles,attn_e2e_cycles,attn_accel_cycles,attn_score_cycles,attn_value_cycles,out_proj_cycles,mlp_fc1_cycles,mlp_fc2_cycles,pooler_cycles,classifier_cycles,bias_cycles,ln_residual_cycles,gelu_cycles,tanh_cycles,hw_rc,raw_hw_rc,speedup_x100,hw_max_abs_diff_x100000,cpu_ref_max_abs_diff_x100000,mismatches
-CSV_DATA,0,tinybert_l1_s32_d128_h4_ff256_cls2,32,128,4,32,256,1,512,2,118537088,8517205,503095,1753750,238866,48495,22227,26268,572280,1104422,1079491,359241,41031,598319,945519,1291528,29663,0,0,1391,585,12,0
-CSV_DATA,1,tinybert_l2_s64_d128_h4_ff256_cls2,64,128,4,32,256,2,512,2,498857167,26968663,1014818,5157450,1098098,345874,158621,187253,1712659,3148026,3036865,367040,41153,2399148,3796969,5167103,29334,0,0,1849,976,48,0
-CSV_DATA,2,tinybert_l4_s128_d128_h4_ff256_cls2,128,128,4,32,256,4,512,2,2285426827,96238263,2044204,17091922,5625978,2609991,1195919,1414072,5701937,10158698,9616551,371297,41153,9726729,15169000,20661217,29577,0,0,2374,1171,24,0
+=== Dual-RoCC Tiny-BERT Inference Test ===^M
+OPCODE_INFO,matmul=0,attention=1^M
+CSV_HEADER,case,name,seq_len,d_model,n_heads,head_dim,hidden_dim,n_layers,vocab_size,num_classes,cpu_cycles,hw_e2e_cycles,embedding_cycles,qkv_proj_cycles,attn_e2e_cycles,attn_accel_cycles,attn_score_cycles,attn_value_cycles,out_proj_cycles,mlp_fc1_cycles,mlp_fc2_cycles,pooler_cycles,classifier_cycles,bias_cycles,ln_residual_cycles,gelu_cycles,tanh_cycles,hw_rc,raw_hw_rc,speedup_x100,hw_max_abs_diff_x100000,cpu_ref_max_abs_diff_x100000,mismatches^M
+CSV_DATA,0,tinybert_l1_s32_d128_h4_ff256_cls2,32,128,4,32,256,1,512,2,118529519,8517672,503742,1753073,238919,48445,22201,26244,570844,1105027,1078045,361598,41008,598854,946172,1290497,29893,0,0,1391,585,12,0^M
+CSV_DATA,1,tinybert_l2_s64_d128_h4_ff256_cls2,64,128,4,32,256,1,512,2,250171994,14183134,1010468,2577355,551144,172965,79394,93571,845292,1567984,1507269,365378,40878,1201146,1899260,2587465,29495,0,0,1763,927,195,0^M
+CSV_DATA,2,tinybert_l4_s128_d128_h4_ff256_cls2,128,128,4,32,256,1,512,2,573262549,25968595,2037280,4297684,1409763,652601,299116,353485,1423275,2541196,2407946,368514,41027,2434220,3800431,5177940,29319,0,0,2207,1000,73,0^M
+CSV_DATA,3,tinybert_l4_s128_d256_h4_ff256_cls2,128,256,4,64,256,1,512,2,1905564150,50363582,4054696,12472627,2804963,1283647,575532,708115,4155145,4144250,4129545,1501594,81092,4219469,7560925,5179106,60170,0,0,3783,2050,97,0^M
+CSV_DATA,4,tinybert_max_l4_s256_d256_h4_ff256_cls2,256,256,4,64,256,1,512,2,4285183447,94265269,8116769,21095088,8102483,4992941,2246108,2746833,7065673,7051108,7009661,1531429,81250,8519428,15269926,10361915,60539,0,0,4545,2734,97,0^M
 

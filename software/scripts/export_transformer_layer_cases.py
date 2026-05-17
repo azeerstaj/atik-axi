@@ -35,6 +35,8 @@ DEFAULT_CASES = (
     TransformerLayerCase("layer_seq32_dm128_h4_ff256", 32, 128, 4, 256, 404),
     TransformerLayerCase("layer_seq64_dm128_h4_ff256", 64, 128, 4, 256, 405),
     TransformerLayerCase("layer_seq128_dm256_h4_ff256", 128, 256, 4, 256, 406),
+    TransformerLayerCase("layer_seq64_dm512_h8_ff512", 64, 512, 8, 512, 407, 0.25, 0.015625),
+    TransformerLayerCase("layer_seq128_dm512_h8_ff512", 128, 512, 8, 512, 408, 0.25, 0.015625),
 )
 
 
@@ -83,8 +85,8 @@ def layer_norm_bf16(x: torch.Tensor, gamma: torch.Tensor, beta: torch.Tensor) ->
 def make_case(case: TransformerLayerCase) -> dict[str, list[int] | int]:
     if case.d_model % case.n_heads != 0:
         raise ValueError(f"{case.name}: d_model must be divisible by n_heads")
-    if case.head_dim > 256 or case.hidden_dim > 256:
-        raise ValueError(f"{case.name}: dimensions exceed current accelerator maxK")
+    if case.head_dim > 512 or case.hidden_dim > 512:
+        raise ValueError(f"{case.name}: dimensions exceed current accelerator maxK=512")
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(case.seed)
