@@ -115,6 +115,64 @@ static inline uint16_t tensor_at(const uint16_t *tensor, int row, int col, int l
   return tensor[row * ld + col];
 }
 
+static int sample_chunk_start(const char *name, int rows, int cols) {
+  uint32_t hash = 2166136261u;
+  for (const char *p = name; *p != '\0'; p++) {
+    hash ^= (uint8_t)(*p);
+    hash *= 16777619u;
+  }
+  hash ^= (uint32_t)(rows * 131 + cols * 17);
+  const int total = rows * cols;
+  if (total <= 10) {
+    return 0;
+  }
+  return (int)(hash % (uint32_t)(total - 10 + 1));
+}
+
+static void print_solution_sample_chunk(
+    int case_index,
+    const char *case_name,
+    const char *tensor_name,
+    const uint16_t *sw,
+    int sw_ld,
+    const uint16_t *hw,
+    int hw_ld,
+    int rows,
+    int cols,
+    int hw_ok) {
+  const int total = rows * cols;
+  const int count = total < 10 ? total : 10;
+  const int start = sample_chunk_start(case_name, rows, cols);
+  printf("SAMPLE_CHUNK,workload=encoder-model,case=%d,name=%s,tensor=%s,start=%d,count=%d,total=%d,sw=[",
+         case_index, case_name, tensor_name, start, count, total);
+  for (int i = 0; i < count; i++) {
+    const int idx = start + i;
+    const int row = idx / cols;
+    const int col = idx % cols;
+    if (i != 0) {
+      printf(" ");
+    }
+    print_float_inline(bf16_to_float(tensor_at(sw, row, col, sw_ld)));
+  }
+  printf("],hw=");
+  if (hw_ok) {
+    printf("[");
+    for (int i = 0; i < count; i++) {
+      const int idx = start + i;
+      const int row = idx / cols;
+      const int col = idx % cols;
+      if (i != 0) {
+        printf(" ");
+      }
+      print_float_inline(bf16_to_float(tensor_at(hw, row, col, hw_ld)));
+    }
+    printf("]");
+  } else {
+    printf("unavailable");
+  }
+  printf("\n");
+}
+
 static inline const uint16_t *layer_vec(const uint16_t *base, int layer, int d_model) {
   return base + (layer * d_model);
 }
@@ -744,6 +802,10 @@ int main(void) {
                             hw_final_ld, &mismatches,
                             tc->tolerance_x100000, tc->name);
     }
+    print_solution_sample_chunk(i, tc->name, "final_output", sw_final,
+                                sw_final_ld, hw_final, hw_final_ld,
+                                tc->seq_len, tc->d_model,
+                                hw_rc == WS_GEMM_OK);
     total_mismatches += mismatches;
 
     printf("CSV_DATA,%d,%s,%d,%d,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%d,%lu,%lu,%lu,%lu,%d\n",
