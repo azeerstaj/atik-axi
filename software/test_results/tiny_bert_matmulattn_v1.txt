@@ -1,0 +1,10 @@
+=== Girdap Tiny-BERT Inference Test ===
+MODE_INFO,name=attention+matmul,matmul_hw=1,attention_hw=1,softmax_hw=0
+OPCODE_INFO,matmul=0,attention=1,softmax=0
+CSV_HEADER,case,name,seq_len,d_model,n_heads,head_dim,hidden_dim,n_layers,vocab_size,num_classes,cpu_cycles,hw_e2e_cycles,embedding_cycles,qkv_proj_cycles,attn_e2e_cycles,attn_accel_cycles,attn_score_cycles,attn_value_cycles,out_proj_cycles,mlp_fc1_cycles,mlp_fc2_cycles,pooler_cycles,classifier_cycles,bias_cycles,ln_residual_cycles,gelu_cycles,tanh_cycles,hw_rc,raw_hw_rc,speedup_x100,hw_max_abs_diff_x100000,cpu_ref_max_abs_diff_x100000,mismatches
+CSV_DATA,0,tinybert_l1_s32_d128_h4_ff256_cls2,32,128,4,32,256,1,512,2,112865878,5146989,496660,1761071,113,0,0,0,0,0,0,0,0,648512,919982,1293049,27602,3,0,2192,0,12,1
+CSV_DATA,1,tinybert_l1_s64_d128_h4_ff256_cls2,64,128,4,32,256,1,512,2,244300455,9324598,998182,2577891,49,0,0,0,0,0,0,0,0,1294130,1839514,2587286,27546,3,0,2619,0,195,1
+CSV_DATA,2,tinybert_l1_s128_d128_h4_ff256_cls2,128,128,4,32,256,1,512,2,558464549,17777224,2001702,4236731,49,0,0,0,0,0,0,0,0,2601497,3726011,5183516,27718,3,0,3141,0,73,1
+CSV_DATA,3,tinybert_512_l1_s128_d512_h8_ff512_cls2,128,512,8,64,512,1,512,2,6876438511,49502786,7967039,7375894,0,0,0,0,0,0,0,0,0,9002529,14694139,10352993,110192,3,0,13891,0,48,1
+CSV_DATA,5,tinybert_512_l1_s256_d512_h8_ff512_cls2,256,512,8,64,512,1,512,2,14697119193,93684049,15983700,8817022,0,0,0,0,0,0,0,0,0,17981684,30017068,20774373,110202,3,0,15687,0,97,1
+
