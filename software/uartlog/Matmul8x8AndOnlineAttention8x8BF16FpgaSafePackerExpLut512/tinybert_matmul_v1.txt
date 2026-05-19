@@ -113,3 +113,4 @@ SAMPLE_JSON {"workload":"tiny-bert","case":4,"name":"tinybert_l1_s128_d128_h4_ff
 SAMPLE_JSON {"workload":"tiny-bert","case":4,"name":"tinybert_l1_s128_d128_h4_ff256_cls2","tensor":"logits","start":0,"count":2,"total":2,"hw_rc":0,"sw":[-0.1640,0.0568],"hw":[-0.1328,0.0505],"diff":[0.0312,0.0063]}
 RESULT_JSON {"workload":"tiny-bert","case":4,"name":"tinybert_l1_s128_d128_h4_ff256_cls2","status":"PASS","hw_rc":0,"raw_hw_rc":0,"mismatches":0,"cpu_cycles":11065782442,"hw_cycles":3899444485,"speedup_x100":283,"hw_max_abs_diff_x100000":3222,"cpu_ref_max_abs_diff_x100000":146}
 
+
