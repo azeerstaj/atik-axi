@@ -34,7 +34,7 @@ COMMON_BUILD_DIR := $(BUILD_DIR)/common
 # Find all .c files in src/
 SRCS        := $(wildcard $(SRC_DIR)/*.c)
 COMMON_SRCS := $(wildcard $(COMMON_DIR)/*.c)
-GEMMINI_TEST_ROOT ?= ../../generators/gemmini/software/gemmini-rocc-tests
+GEMMINI_TEST_ROOT ?= ../../gemmini/software/gemmini-rocc-tests
 GEMMINI_CFLAGS ?= -Igemmini -I$(GEMMINI_TEST_ROOT)
 
 # Create a list of target ELFs and DUMPs based on the source filenames
