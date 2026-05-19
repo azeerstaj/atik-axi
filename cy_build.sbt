@@ -173,7 +173,7 @@ lazy val chipyard = {
   val baseProjects: Seq[ProjectReference] =
     Seq(
       girdap,
-      testchipip, rocketchip, boom, rocketchip_blocks, rocketchip_inclusive_cache,
+      gemmini, testchipip, rocketchip, boom, rocketchip_blocks, rocketchip_inclusive_cache,
       icenet, tracegen,
       constellation, barf, shuttle, rerocc,
     ).map(sbt.Project.projectToRef) ++
