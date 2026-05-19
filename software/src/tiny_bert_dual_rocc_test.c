@@ -20,6 +20,15 @@
 #define LN_EPSILON 0.00001f
 #define TINY_BERT_ERR_MASK_UNSUPPORTED 10
 
+#ifdef GIRDAP_USE_GEMMINI
+#define TINY_BERT_GEMM_DIM DIM
+#else
+#define TINY_BERT_GEMM_DIM 8
+#endif
+
+#define TINY_BERT_CLASSIFIER_STRIDE \
+  ((TINY_BERT_MAX_NUM_CLASSES < TINY_BERT_GEMM_DIM) ? TINY_BERT_GEMM_DIM : TINY_BERT_MAX_NUM_CLASSES)
+
 #ifndef GIRDAP_HW_MATMUL
 #define GIRDAP_HW_MATMUL 1
 #endif
@@ -84,6 +93,7 @@ static uint16_t act[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_HIDDEN_DIM] __attribute
 static uint16_t ffn_out[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL] __attribute__((aligned(64)));
 static uint16_t pool[TINY_BERT_MAX_D_MODEL] __attribute__((aligned(64)));
 static uint16_t logits[TINY_BERT_MAX_NUM_CLASSES] __attribute__((aligned(64)));
+static uint16_t classifier_out[TINY_BERT_CLASSIFIER_STRIDE] __attribute__((aligned(64)));
 
 static uint64_t gemm_a_tiles[
     WS_GEMM8_A_TILE_WORDS(TINY_BERT_MAX_SEQ_LEN, TINY_BERT_MAX_HIDDEN_DIM)]
@@ -1009,9 +1019,16 @@ static int hw_tiny_bert_forward(
   stats->tanh_cycles += ws_read_cycles() - stage_start;
 
   if (rc == WS_GEMM_OK) {
+    memset(classifier_out, 0, sizeof(classifier_out));
     rc = hw_gemm(pool, tc->d_model, tc->classifier_w, tc->num_classes,
-                 logits, tc->num_classes, 1, tc->num_classes, tc->d_model,
-                 gemm_workspace, &stats->classifier_cycles);
+                 classifier_out, TINY_BERT_CLASSIFIER_STRIDE,
+                 1, tc->num_classes, tc->d_model, gemm_workspace,
+                 &stats->classifier_cycles);
+    if (rc == WS_GEMM_OK) {
+      for (int i = 0; i < tc->num_classes; i++) {
+        logits[i] = classifier_out[i];
+      }
+    }
   }
   stage_start = ws_read_cycles();
   add_bias_inplace_bf16(logits, tc->num_classes, tc->classifier_b, 1, tc->num_classes);
