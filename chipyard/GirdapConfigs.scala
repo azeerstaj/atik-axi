@@ -9,7 +9,6 @@ import girdap.{
   SoftmaxAccel
 }
 
-
 class FusedOnlineAttention8x8BF16FpgaSafePackerExpLutConfig extends Config(
   new FusedOnlineAttention8x8BF16FpgaSafePackerExpLut ++
     new freechips.rocketchip.subsystem.WithoutTLMonitors ++

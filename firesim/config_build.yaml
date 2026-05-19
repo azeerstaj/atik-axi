@@ -11,10 +11,10 @@ build_farm:
 builds_to_run:
     # this section references builds defined in config_build_recipes.yaml
     # if you add a build here, it will be built when you run buildbitstream
-    - MatmulAccel4x4WSBF16v3
+    - GemminiBF16Default8
 
 agfis_to_share:
-    - MatmulAccel4x4WSBF16v3
+    - GemminiBF16Default8
 
 share_with_accounts:
     # To share with a specific user:
