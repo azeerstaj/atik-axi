@@ -8,11 +8,10 @@ attention, and softmax experiments.
 
 The active Chipyard configs are defined in `chipyard/GirdapConfigs.scala`:
 
-* `FusedOnlineAttention8x8BF16FpgaSafePackerExpLutConfig`
-* `Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLutConfig`
-* `Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLut512Config`
-* `SoftmaxAccel128Config`
-* `MatmulAccel8x8BF16FpgaSafeConfig`
+* Girdap İri   :`Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLut512Config`
+* Girdap Vasat :`FusedOnlineAttention8x8BF16FpgaSafePackerExpLutConfig`
+* Girdap Küçük :`MatmulAccel8x8BF16FpgaSafeConfig`
+* Girdap Minik :`SoftmaxAccel128Config`
 
 ### Licensing
 
