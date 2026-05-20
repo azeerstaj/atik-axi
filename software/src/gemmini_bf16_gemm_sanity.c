@@ -19,6 +19,7 @@ static elem_t mat_a[MAX_M][MAX_K] row_align(1);
 static elem_t mat_b[MAX_K][MAX_N] row_align(1);
 static elem_t mat_c[MAX_M][MAX_N] row_align(1);
 static elem_t mat_ref[MAX_M][MAX_N] row_align(1);
+static elem_t mat_cpu_lib[MAX_M][MAX_N] row_align(1);
 
 typedef enum {
   DIST_ONES = 0,
@@ -78,6 +79,7 @@ static void fill_inputs(const gemm_case_t *tc, int case_idx) {
 
   memset(mat_c, 0, sizeof(mat_c));
   memset(mat_ref, 0, sizeof(mat_ref));
+  memset(mat_cpu_lib, 0, sizeof(mat_cpu_lib));
 }
 
 static uint64_t cpu_gemm_ref(const gemm_case_t *tc) {
@@ -123,6 +125,36 @@ static uint64_t gemmini_gemm(const gemm_case_t *tc) {
       0,
       WS);
   gemmini_fence();
+  return read_cycles() - start;
+}
+
+static uint64_t gemmini_cpu_gemm(const gemm_case_t *tc) {
+  const uint64_t start = read_cycles();
+  tiled_matmul_auto(
+      tc->m,
+      tc->n,
+      tc->k,
+      (elem_t *)mat_a,
+      (elem_t *)mat_b,
+      NULL,
+      (elem_t *)mat_cpu_lib,
+      MAX_K,
+      MAX_N,
+      0,
+      MAX_N,
+      MVIN_SCALE_IDENTITY,
+      MVIN_SCALE_IDENTITY,
+      MVIN_SCALE_IDENTITY,
+      NO_ACTIVATION,
+      ACC_SCALE_IDENTITY,
+      0,
+      false,
+      false,
+      false,
+      false,
+      false,
+      0,
+      CPU);
   return read_cycles() - start;
 }
 
@@ -202,7 +234,7 @@ int main(void) {
   printf("gemmini: DIM=%d elem_bits=%d acc_bits=%d custom=%d\n",
          DIM, ELEM_T_EXP_BITS + ELEM_T_SIG_BITS,
          ACC_T_EXP_BITS + ACC_T_SIG_BITS, XCUSTOM_ACC);
-  printf("CSV_HEADER,case,name,M,N,K,cpu_cycles,hw_cycles,speedup_x100,max_abs_diff_x100000,tolerance_x100000,bit_mismatches,mismatches\n");
+  printf("CSV_HEADER,case,name,M,N,K,manual_cpu_cycles,gemmini_cpu_cycles,hw_cycles,speedup_x100,max_abs_diff_x100000,tolerance_x100000,bit_mismatches,mismatches,cpu_lib_bit_mismatches\n");
 
   int total_mismatches = 0;
   for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
@@ -211,6 +243,7 @@ int main(void) {
 
     const uint64_t hw_cycles = gemmini_gemm(tc);
     const uint64_t cpu_cycles = cpu_gemm_ref(tc);
+    const uint64_t gemmini_cpu_cycles = gemmini_cpu_gemm(tc);
     const uint64_t speedup_x100 =
         hw_cycles == 0 ? 0 : (cpu_cycles * 100u) / hw_cycles;
 
@@ -220,15 +253,26 @@ int main(void) {
         tc, i, &max_abs_diff_x100000, &bit_mismatches);
     total_mismatches += mismatches;
 
-    printf("CSV_DATA,%d,%s,%d,%d,%d,%lu,%lu,%lu,%u,%u,%d,%d\n",
+    int cpu_lib_bit_mismatches = 0;
+    for (int r = 0; r < tc->m; r++) {
+      for (int c = 0; c < tc->n; c++) {
+        if (mat_cpu_lib[r][c] != mat_ref[r][c]) {
+          cpu_lib_bit_mismatches++;
+        }
+      }
+    }
+
+    printf("CSV_DATA,%d,%s,%d,%d,%d,%lu,%lu,%lu,%lu,%u,%u,%u,%d,%d,%d\n",
            i, tc->name, tc->m, tc->n, tc->k,
            (unsigned long)cpu_cycles,
+           (unsigned long)gemmini_cpu_cycles,
            (unsigned long)hw_cycles,
            (unsigned long)speedup_x100,
            max_abs_diff_x100000,
            tc->tolerance_x100000,
            bit_mismatches,
-           mismatches);
+           mismatches,
+           cpu_lib_bit_mismatches);
 
     const int sample_cols = tc->n < SAMPLE_COUNT ? tc->n : SAMPLE_COUNT;
     print_sample("ref", mat_ref, 0, 0, sample_cols);
