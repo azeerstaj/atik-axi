@@ -475,6 +475,7 @@ static int gemmini_attention_heads(const tiny_bert_case_t *tc, tiny_bert_hw_stat
     const int base = h * tc->head_dim;
 
     uint64_t stage_start = read_cycles();
+    printf("    gemmini: attn_head=%d qk_softmax_start\n", h);
     gemmini_fence();
     tiled_matmul_auto(
         tc->seq_len,
@@ -503,10 +504,13 @@ static int gemmini_attention_heads(const tiny_bert_case_t *tc, tiny_bert_hw_stat
         WS);
     gemmini_fence();
     const uint64_t qk_cycles = read_cycles() - stage_start;
+    printf("    gemmini: attn_head=%d qk_softmax_done cycles=%lu\n",
+           h, (unsigned long)qk_cycles);
     stats->attn_score_cycles += qk_cycles;
     stats->attn_accel_cycles += qk_cycles;
 
     stage_start = read_cycles();
+    printf("    gemmini: attn_head=%d pv_start\n", h);
     tiled_matmul_auto(
         tc->seq_len,
         tc->head_dim,
@@ -534,6 +538,8 @@ static int gemmini_attention_heads(const tiny_bert_case_t *tc, tiny_bert_hw_stat
         WS);
     gemmini_fence();
     const uint64_t pv_cycles = read_cycles() - stage_start;
+    printf("    gemmini: attn_head=%d pv_done cycles=%lu\n",
+           h, (unsigned long)pv_cycles);
     stats->attn_value_cycles += pv_cycles;
     stats->attn_accel_cycles += pv_cycles;
   }
@@ -562,35 +568,45 @@ static int gemmini_tiny_bert_forward(const tiny_bert_case_t *tc, tiny_bert_hw_st
     const uint16_t *w2 = layer_w_hxd(tc->w2, layer, tc->hidden_dim, tc->d_model);
 
     bf16_bias_to_acc(layer_vec(tc->bq, layer, tc->d_model), bias_d_model, tc->d_model);
+    printf("    gemmini: layer=%d q_proj_start\n", layer);
     rc = gemmini_matmul_bias_bf16(&x[0][0], TINY_BERT_MAX_D_MODEL, wq, tc->d_model,
                                   bias_d_model, &q_proj[0][0], TINY_BERT_MAX_D_MODEL,
                                   tc->seq_len, tc->d_model, tc->d_model,
                                   &stats->qkv_proj_cycles);
+    printf("    gemmini: layer=%d q_proj_done rc=%d\n", layer, rc);
     bf16_bias_to_acc(layer_vec(tc->bk, layer, tc->d_model), bias_d_model, tc->d_model);
     if (rc == 0) {
+      printf("    gemmini: layer=%d k_proj_start\n", layer);
       rc = gemmini_matmul_bias_bf16(&x[0][0], TINY_BERT_MAX_D_MODEL, wk, tc->d_model,
                                     bias_d_model, &k_proj[0][0], TINY_BERT_MAX_D_MODEL,
                                     tc->seq_len, tc->d_model, tc->d_model,
                                     &stats->qkv_proj_cycles);
+      printf("    gemmini: layer=%d k_proj_done rc=%d\n", layer, rc);
     }
     bf16_bias_to_acc(layer_vec(tc->bv, layer, tc->d_model), bias_d_model, tc->d_model);
     if (rc == 0) {
+      printf("    gemmini: layer=%d v_proj_start\n", layer);
       rc = gemmini_matmul_bias_bf16(&x[0][0], TINY_BERT_MAX_D_MODEL, wv, tc->d_model,
                                     bias_d_model, &v_proj[0][0], TINY_BERT_MAX_D_MODEL,
                                     tc->seq_len, tc->d_model, tc->d_model,
                                     &stats->qkv_proj_cycles);
+      printf("    gemmini: layer=%d v_proj_done rc=%d\n", layer, rc);
     }
 
     if (rc == 0) {
+      printf("    gemmini: layer=%d attention_start\n", layer);
       rc = gemmini_attention_heads(tc, stats);
+      printf("    gemmini: layer=%d attention_done rc=%d\n", layer, rc);
     }
 
     bf16_bias_to_acc(layer_vec(tc->bo, layer, tc->d_model), bias_d_model, tc->d_model);
     if (rc == 0) {
+      printf("    gemmini: layer=%d out_proj_start\n", layer);
       rc = gemmini_matmul_bias_bf16(&context[0][0], TINY_BERT_MAX_D_MODEL, wo, tc->d_model,
                                     bias_d_model, &attn_out[0][0], TINY_BERT_MAX_D_MODEL,
                                     tc->seq_len, tc->d_model, tc->d_model,
                                     &stats->out_proj_cycles);
+      printf("    gemmini: layer=%d out_proj_done rc=%d\n", layer, rc);
     }
 
     stage_start = read_cycles();
@@ -603,10 +619,12 @@ static int gemmini_tiny_bert_forward(const tiny_bert_case_t *tc, tiny_bert_hw_st
 
     bf16_bias_to_acc(layer_hidden_vec(tc->b1, layer, tc->hidden_dim), bias_hidden, tc->hidden_dim);
     if (rc == 0) {
+      printf("    gemmini: layer=%d mlp_fc1_start\n", layer);
       rc = gemmini_matmul_bias_bf16(&x[0][0], TINY_BERT_MAX_D_MODEL, w1, tc->hidden_dim,
                                     bias_hidden, &hidden[0][0], TINY_BERT_MAX_HIDDEN_DIM,
                                     tc->seq_len, tc->hidden_dim, tc->d_model,
                                     &stats->mlp_fc1_cycles);
+      printf("    gemmini: layer=%d mlp_fc1_done rc=%d\n", layer, rc);
     }
 
     stage_start = read_cycles();
@@ -616,10 +634,12 @@ static int gemmini_tiny_bert_forward(const tiny_bert_case_t *tc, tiny_bert_hw_st
 
     bf16_bias_to_acc(layer_vec(tc->b2, layer, tc->d_model), bias_d_model, tc->d_model);
     if (rc == 0) {
+      printf("    gemmini: layer=%d mlp_fc2_start\n", layer);
       rc = gemmini_matmul_bias_bf16(&act[0][0], TINY_BERT_MAX_HIDDEN_DIM, w2, tc->d_model,
                                     bias_d_model, &ffn_out[0][0], TINY_BERT_MAX_D_MODEL,
                                     tc->seq_len, tc->d_model, tc->hidden_dim,
                                     &stats->mlp_fc2_cycles);
+      printf("    gemmini: layer=%d mlp_fc2_done rc=%d\n", layer, rc);
     }
 
     stage_start = read_cycles();
@@ -637,10 +657,12 @@ static int gemmini_tiny_bert_forward(const tiny_bert_case_t *tc, tiny_bert_hw_st
 
   bf16_bias_to_acc(tc->pool_b, bias_d_model, tc->d_model);
   if (rc == 0) {
+    printf("    gemmini: pooler_start\n");
     rc = gemmini_matmul_bias_bf16(&x[0][0], TINY_BERT_MAX_D_MODEL, tc->pool_w, tc->d_model,
                                   bias_d_model, pool, tc->d_model,
                                   1, tc->d_model, tc->d_model,
                                   &stats->pooler_cycles);
+    printf("    gemmini: pooler_done rc=%d\n", rc);
   }
 
   stage_start = read_cycles();
@@ -651,10 +673,12 @@ static int gemmini_tiny_bert_forward(const tiny_bert_case_t *tc, tiny_bert_hw_st
   memset(bias_classes, 0, sizeof(bias_classes));
   bf16_bias_to_acc(tc->classifier_b, bias_classes, tc->num_classes);
   if (rc == 0) {
+    printf("    gemmini: classifier_start\n");
     rc = gemmini_matmul_bias_bf16(pool, tc->d_model, tc->classifier_w, tc->num_classes,
                                   bias_classes, classifier_out, TINY_BERT_CLASSIFIER_STRIDE,
                                   1, tc->num_classes, tc->d_model,
                                   &stats->classifier_cycles);
+    printf("    gemmini: classifier_done rc=%d\n", rc);
     if (rc == 0) {
       for (int i = 0; i < tc->num_classes; i++) {
         logits[i] = classifier_out[i];
@@ -720,17 +744,25 @@ int main(void) {
   for (int i = 0; i < tiny_bert_case_count; i++) {
     const tiny_bert_case_t *tc = &tiny_bert_cases[i];
 
+    printf("\n[Case %d] %s\n", i, tc->name);
+    printf("  shape : seq=%d d_model=%d heads=%d head_dim=%d hidden=%d layers=%d vocab=%d classes=%d\n",
+           tc->seq_len, tc->d_model, tc->n_heads, tc->head_dim,
+           tc->hidden_dim, tc->n_layers, tc->vocab_size, tc->num_classes);
+    printf("  phase : cpu_ref_start\n");
     const uint64_t cpu_start = read_cycles();
     sw_tiny_bert_forward(tc);
     const uint64_t cpu_cycles = read_cycles() - cpu_start;
+    printf("  phase : cpu_ref_done cycles=%lu\n", (unsigned long)cpu_cycles);
 
     int cpu_mismatches = 0;
     const float cpu_ref_diff = max_diff_logits(tc->expected_logits, sw_logits,
                                                tc->num_classes, &cpu_mismatches,
                                                tc->tolerance_x100000, tc->name);
 
+    printf("  phase : gemmini_start\n");
     tiny_bert_hw_stats_t stats;
     const int hw_rc = gemmini_tiny_bert_forward(tc, &stats);
+    printf("  phase : gemmini_done hw_rc=%d\n", hw_rc);
     const uint64_t hw_e2e_cycles = hw_stats_total_cycles(&stats);
     const uint64_t speedup_x100 =
         hw_e2e_cycles == 0 ? 0 : (cpu_cycles * 100u) / hw_e2e_cycles;
@@ -742,10 +774,6 @@ int main(void) {
                                 &mismatches, tc->tolerance_x100000, tc->name);
     }
 
-    printf("\n[Case %d] %s\n", i, tc->name);
-    printf("  shape : seq=%d d_model=%d heads=%d head_dim=%d hidden=%d layers=%d vocab=%d classes=%d\n",
-           tc->seq_len, tc->d_model, tc->n_heads, tc->head_dim,
-           tc->hidden_dim, tc->n_layers, tc->vocab_size, tc->num_classes);
     printf("  mode  : gemmini-bf16  backend=gemmini-bf16 dim=%d opcode=%d\n", DIM, XCUSTOM_ACC);
     printf("  status: %s  hw_rc=%d raw_hw_rc=%lu mismatches=%d\n",
            (hw_rc == 0 && mismatches == 0) ? "PASS" : "FAIL",
