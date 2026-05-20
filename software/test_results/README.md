@@ -30,3 +30,4 @@ Notes:
 - Tiny-BERT includes token/position/type embeddings, embedding LayerNorm, BERT-style post-LN encoder layers, pooler, and classifier logits.
 - ViT-style encoder and transformer rows use synthetic BF16 weights and PyTorch-generated references.
 - These results use the current dual-RoCC configuration: matmul on custom0 and attention on custom1.
+- Gemmini BF16 is used only as a GEMM baseline. As of now this Gemmini codebase does not support native normalization (`SOFTMAX`/`LAYERNORM`) on the BF16 datapath, so BF16 Gemmini workloads should not be interpreted as full attention-accelerator results.

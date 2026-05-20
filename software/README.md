@@ -23,6 +23,12 @@ Tiny-BERT, ViT, and GPT-2 prefill each have matching workload variants for:
 * `matmul-only`: `MatmulAccel8x8BF16FpgaSafeConfig`
 * `softmax-only`: `SoftmaxAccel128Config`
 
+Gemmini BF16 workloads are currently treated as GEMM-only baselines. In this
+Gemmini codebase, native normalization (`SOFTMAX`/`LAYERNORM`) is supported on
+the integer/I-BERT-style datapath, but not on the BF16 floating-point datapath.
+Therefore BF16 Gemmini comparisons only use Gemmini for matmul layers; attention
+normalization is not claimed as Gemmini-accelerated.
+
 The workload JSONs live in `workloads/pytorch/bare/` and call
 `build-pytorch-benchmark.sh`, which regenerates the PyTorch cases and compiles
 the same C benchmark with the requested hardware mode flags.
