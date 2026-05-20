@@ -16,6 +16,12 @@
 #define TINY_BERT_CLASSIFIER_STRIDE \
   ((TINY_BERT_MAX_NUM_CLASSES < DIM) ? DIM : TINY_BERT_MAX_NUM_CLASSES)
 
+#ifdef HAS_NORMALIZATIONS
+#define GEMMINI_TINY_BERT_FLOW "gemmini-transformer-style"
+#else
+#define GEMMINI_TINY_BERT_FLOW "gemmini-matmul-cpu-softmax"
+#endif
+
 static uint16_t sw_x[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL];
 static uint16_t sw_q[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL];
 static uint16_t sw_k[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL];
@@ -360,6 +366,35 @@ static void sw_attention_heads(const tiny_bert_case_t *tc) {
   }
 }
 
+static void softmax_bf16_rows(
+    const elem_t *scores,
+    int score_ld,
+    elem_t *probs,
+    int prob_ld,
+    int rows,
+    int cols) {
+  for (int r = 0; r < rows; r++) {
+    float max_score = -INFINITY;
+    for (int c = 0; c < cols; c++) {
+      const float score = bf16_to_float(scores[r * score_ld + c]);
+      if (score > max_score) {
+        max_score = score;
+      }
+    }
+
+    double denom = 0.0;
+    for (int c = 0; c < cols; c++) {
+      const double e = exp((double)(bf16_to_float(scores[r * score_ld + c]) - max_score));
+      sw_probs[r][c] = (float)e;
+      denom += e;
+    }
+
+    for (int c = 0; c < cols; c++) {
+      probs[r * prob_ld + c] = float_to_bf16((float)((double)sw_probs[r][c] / denom));
+    }
+  }
+}
+
 static void sw_tiny_bert_forward(const tiny_bert_case_t *tc) {
   embeddings_bf16(tc, sw_x);
   for (int layer = 0; layer < tc->n_layers; layer++) {
@@ -475,7 +510,11 @@ static int gemmini_attention_heads(const tiny_bert_case_t *tc, tiny_bert_hw_stat
     const int base = h * tc->head_dim;
 
     uint64_t stage_start = read_cycles();
+#ifdef HAS_NORMALIZATIONS
     printf("    gemmini: attn_head=%d qk_softmax_start\n", h);
+#else
+    printf("    gemmini: attn_head=%d qk_matmul_start\n", h);
+#endif
     gemmini_fence();
     tiled_matmul_auto(
         tc->seq_len,
@@ -492,7 +531,11 @@ static int gemmini_attention_heads(const tiny_bert_case_t *tc, tiny_bert_hw_stat
         qk_scale,
         MVIN_SCALE_IDENTITY,
         MVIN_SCALE_IDENTITY,
+#ifdef HAS_NORMALIZATIONS
         SOFTMAX,
+#else
+        NO_ACTIVATION,
+#endif
         ACC_SCALE_IDENTITY,
         0,
         false,
@@ -504,8 +547,16 @@ static int gemmini_attention_heads(const tiny_bert_case_t *tc, tiny_bert_hw_stat
         WS);
     gemmini_fence();
     const uint64_t qk_cycles = read_cycles() - stage_start;
+#ifdef HAS_NORMALIZATIONS
     printf("    gemmini: attn_head=%d qk_softmax_done cycles=%lu\n",
            h, (unsigned long)qk_cycles);
+#else
+    printf("    gemmini: attn_head=%d qk_matmul_done cycles=%lu\n",
+           h, (unsigned long)qk_cycles);
+    softmax_bf16_rows(&attn_probs[0][0], TINY_BERT_MAX_SEQ_LEN,
+                      &attn_probs[0][0], TINY_BERT_MAX_SEQ_LEN,
+                      tc->seq_len, tc->seq_len);
+#endif
     stats->attn_score_cycles += qk_cycles;
     stats->attn_accel_cycles += qk_cycles;
 
@@ -732,13 +783,23 @@ int main(void) {
   gemmini_flush(0);
 
   printf("=== Gemmini Tiny-BERT BF16 Inference Test ===\n");
-  printf("mode: gemmini-bf16  flow=gemmini-transformer-style\n");
+  printf("mode: gemmini-bf16  flow=%s\n", GEMMINI_TINY_BERT_FLOW);
+#ifndef HAS_NORMALIZATIONS
+  printf("note: HAS_NORMALIZATIONS is not present; Gemmini native SOFTMAX is disabled for this build.\n");
+#endif
   printf("gemmini: DIM=%d elem_bits=%d acc_bits=%d custom=%d\n",
          DIM, ELEM_T_EXP_BITS + ELEM_T_SIG_BITS, ACC_T_EXP_BITS + ACC_T_SIG_BITS,
          XCUSTOM_ACC);
-  printf("RUN_INFO_JSON {\"workload\":\"tiny-bert\",\"mode\":\"gemmini-bf16\",\"backend\":\"gemmini-bf16\",\"flow\":\"gemmini-transformer-style\",\"dim\":%d,\"elem_bits\":%d,\"acc_bits\":%d,\"opcode\":%d}\n",
+  printf("RUN_INFO_JSON {\"workload\":\"tiny-bert\",\"mode\":\"gemmini-bf16\",\"backend\":\"gemmini-bf16\",\"flow\":\"%s\",\"dim\":%d,\"elem_bits\":%d,\"acc_bits\":%d,\"opcode\":%d,\"has_normalizations\":%d}\n",
+         GEMMINI_TINY_BERT_FLOW,
          DIM, ELEM_T_EXP_BITS + ELEM_T_SIG_BITS,
-         ACC_T_EXP_BITS + ACC_T_SIG_BITS, XCUSTOM_ACC);
+         ACC_T_EXP_BITS + ACC_T_SIG_BITS, XCUSTOM_ACC,
+#ifdef HAS_NORMALIZATIONS
+         1
+#else
+         0
+#endif
+         );
 
   int total_mismatches = 0;
   for (int i = 0; i < tiny_bert_case_count; i++) {
@@ -774,7 +835,8 @@ int main(void) {
                                 &mismatches, tc->tolerance_x100000, tc->name);
     }
 
-    printf("  mode  : gemmini-bf16  backend=gemmini-bf16 dim=%d opcode=%d\n", DIM, XCUSTOM_ACC);
+    printf("  mode  : gemmini-bf16  backend=gemmini-bf16 flow=%s dim=%d opcode=%d\n",
+           GEMMINI_TINY_BERT_FLOW, DIM, XCUSTOM_ACC);
     printf("  status: %s  hw_rc=%d raw_hw_rc=%lu mismatches=%d\n",
            (hw_rc == 0 && mismatches == 0) ? "PASS" : "FAIL",
            hw_rc, (unsigned long)stats.raw_hw_rc, mismatches);
