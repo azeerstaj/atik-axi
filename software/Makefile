@@ -55,8 +55,8 @@ all: $(ELFS) $(DUMPS)
 $(BUILD_DIR)/%.riscv: $(SRC_DIR)/%.c $(COMMON_OBJS) | $(BUILD_DIR) $(COMMON_BUILD_DIR)
 	$(RISCV_CC) $(CFLAGS) -MMD -MP -MF $(@:.riscv=.d) -o $@ $< $(COMMON_OBJS) -lm
 
-$(BUILD_DIR)/tiny_bert_gemmini_bf16_test.riscv: $(SRC_DIR)/tiny_bert_dual_rocc_test.c $(COMMON_OBJS) gemmini/include/gemmini_params.h | $(BUILD_DIR) $(COMMON_BUILD_DIR)
-	$(RISCV_CC) $(CFLAGS) $(GEMMINI_CFLAGS) -DGIRDAP_USE_GEMMINI=1 -DGIRDAP_HW_MATMUL=1 -DGIRDAP_HW_ATTENTION=1 -DGIRDAP_HW_SOFTMAX=0 -MMD -MP -MF $(@:.riscv=.d) -o $@ $< $(COMMON_OBJS) -lm
+$(BUILD_DIR)/tiny_bert_gemmini_bf16_test.riscv: $(SRC_DIR)/tiny_bert_gemmini_bf16_test.c gemmini/include/gemmini_params.h | $(BUILD_DIR)
+	$(RISCV_CC) $(CFLAGS) $(GEMMINI_CFLAGS) -MMD -MP -MF $(@:.riscv=.d) -o $@ $< -lm
 
 $(COMMON_BUILD_DIR)/%.o: $(COMMON_DIR)/%.c | $(COMMON_BUILD_DIR)
 	$(RISCV_CC) $(CFLAGS) -MMD -MP -MF $(@:.o=.d) -c -o $@ $<

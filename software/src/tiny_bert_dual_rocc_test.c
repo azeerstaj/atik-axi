@@ -8,10 +8,6 @@
 #include "online_softmax.h"
 #include "ws_gemm.h"
 
-#ifdef GIRDAP_USE_GEMMINI
-#include "include/gemmini.h"
-#endif
-
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,15 +15,6 @@
 
 #define LN_EPSILON 0.00001f
 #define TINY_BERT_ERR_MASK_UNSUPPORTED 10
-
-#ifdef GIRDAP_USE_GEMMINI
-#define TINY_BERT_GEMM_DIM DIM
-#else
-#define TINY_BERT_GEMM_DIM 8
-#endif
-
-#define TINY_BERT_CLASSIFIER_STRIDE \
-  ((TINY_BERT_MAX_NUM_CLASSES < TINY_BERT_GEMM_DIM) ? TINY_BERT_GEMM_DIM : TINY_BERT_MAX_NUM_CLASSES)
 
 #ifndef GIRDAP_HW_MATMUL
 #define GIRDAP_HW_MATMUL 1
@@ -55,11 +42,6 @@
 #define GIRDAP_BENCHMARK_MODE "softmax-only"
 #else
 #define GIRDAP_BENCHMARK_MODE "software-only"
-#endif
-
-#ifdef GIRDAP_USE_GEMMINI
-#undef GIRDAP_BENCHMARK_MODE
-#define GIRDAP_BENCHMARK_MODE "gemmini-bf16"
 #endif
 
 static uint16_t sw_x[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL];
@@ -93,7 +75,6 @@ static uint16_t act[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_HIDDEN_DIM] __attribute
 static uint16_t ffn_out[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL] __attribute__((aligned(64)));
 static uint16_t pool[TINY_BERT_MAX_D_MODEL] __attribute__((aligned(64)));
 static uint16_t logits[TINY_BERT_MAX_NUM_CLASSES] __attribute__((aligned(64)));
-static uint16_t classifier_out[TINY_BERT_CLASSIFIER_STRIDE] __attribute__((aligned(64)));
 
 static uint64_t gemm_a_tiles[
     WS_GEMM8_A_TILE_WORDS(TINY_BERT_MAX_SEQ_LEN, TINY_BERT_MAX_HIDDEN_DIM)]
@@ -519,96 +500,6 @@ static void sw_tiny_bert_forward(const tiny_bert_case_t *tc) {
                       1, tc->num_classes, tc->d_model);
 }
 
-#ifdef GIRDAP_USE_GEMMINI
-static int gemmini_gemm_bf16(
-    const uint16_t *A,
-    int lda,
-    const uint16_t *B,
-    int ldb,
-    uint16_t *C,
-    int ldc,
-    int M,
-    int N,
-    int K,
-    acc_scale_t output_scale,
-    uint64_t *cycles) {
-  gemmini_fence();
-  const uint64_t start = ws_read_cycles();
-  tiled_matmul_auto(
-      M,
-      N,
-      K,
-      (elem_t *)A,
-      (elem_t *)B,
-      NULL,
-      (elem_t *)C,
-      lda,
-      ldb,
-      ldc,
-      ldc,
-      MVIN_SCALE_IDENTITY,
-      MVIN_SCALE_IDENTITY,
-      MVIN_SCALE_IDENTITY,
-      NO_ACTIVATION,
-      output_scale,
-      0,
-      false,
-      false,
-      false,
-      false,
-      false,
-      0,
-      WS);
-  gemmini_fence();
-  *cycles += ws_read_cycles() - start;
-  return WS_GEMM_OK;
-}
-
-static int gemmini_gemm_bf16_transpose_b(
-    const uint16_t *A,
-    int lda,
-    const uint16_t *B,
-    int ldb,
-    uint16_t *C,
-    int ldc,
-    int M,
-    int N,
-    int K,
-    acc_scale_t output_scale,
-    uint64_t *cycles) {
-  gemmini_fence();
-  const uint64_t start = ws_read_cycles();
-  tiled_matmul_auto(
-      M,
-      N,
-      K,
-      (elem_t *)A,
-      (elem_t *)B,
-      NULL,
-      (elem_t *)C,
-      lda,
-      ldb,
-      ldc,
-      ldc,
-      MVIN_SCALE_IDENTITY,
-      MVIN_SCALE_IDENTITY,
-      MVIN_SCALE_IDENTITY,
-      NO_ACTIVATION,
-      output_scale,
-      0,
-      false,
-      false,
-      true,
-      false,
-      false,
-      0,
-      WS);
-  gemmini_fence();
-  *cycles += ws_read_cycles() - start;
-  return WS_GEMM_OK;
-}
-#endif
-
 static int hw_gemm(
     const uint16_t *A,
     int lda,
@@ -621,11 +512,7 @@ static int hw_gemm(
     int K,
     const ws_gemm_workspace_t *workspace,
     uint64_t *cycles) {
-#ifdef GIRDAP_USE_GEMMINI
-  (void)workspace;
-  return gemmini_gemm_bf16(A, lda, B, ldb, C, ldc, M, N, K,
-                           ACC_SCALE_IDENTITY, cycles);
-#elif GIRDAP_HW_MATMUL
+#if GIRDAP_HW_MATMUL
   ws_gemm_stats_t stats;
   memset(&stats, 0, sizeof(stats));
   const int rc = ws_gemm8_bf16(A, lda, B, ldb, C, ldc, M, N, K, workspace, &stats);
@@ -758,101 +645,11 @@ static int softmax_hw_attention_heads(
   return WS_GEMM_OK;
 }
 
-#ifdef GIRDAP_USE_GEMMINI
-static int gemmini_attention_heads(
-    const tiny_bert_case_t *tc,
-    const uint16_t q[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL],
-    const uint16_t k[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL],
-    const uint16_t v[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL],
-    uint16_t out[TINY_BERT_MAX_SEQ_LEN][TINY_BERT_MAX_D_MODEL],
-    tiny_bert_hw_stats_t *stats) {
-  if (!mask_all_valid(tc)) {
-    return TINY_BERT_ERR_MASK_UNSUPPORTED;
-  }
-
-  const uint64_t total_start = ws_read_cycles();
-  for (int h = 0; h < tc->n_heads; h++) {
-    const int base = h * tc->head_dim;
-
-    uint64_t qk_cycles = 0;
-    int rc = gemmini_gemm_bf16_transpose_b(
-        &q[0][base],
-        TINY_BERT_MAX_D_MODEL,
-        &k[0][base],
-        TINY_BERT_MAX_D_MODEL,
-        &attn_scores_bf16[0][0],
-        TINY_BERT_MAX_SEQ_LEN,
-        tc->seq_len,
-        tc->seq_len,
-        tc->head_dim,
-        (acc_scale_t)bf16_to_float(tc->scale_bf16),
-        &qk_cycles);
-    stats->attn_score_cycles += qk_cycles;
-    stats->attn_accel_cycles += qk_cycles;
-    if (rc != WS_GEMM_OK) {
-      stats->attn_e2e_cycles += ws_read_cycles() - total_start;
-      return rc;
-    }
-
-    const uint64_t softmax_start = ws_read_cycles();
-    for (int qr = 0; qr < tc->seq_len; qr++) {
-      float max_score = -INFINITY;
-      for (int kv = 0; kv < tc->seq_len; kv++) {
-        const float score = tc->attention_mask[kv]
-                                ? bf16_to_float(attn_scores_bf16[qr][kv])
-                                : -10000.0f;
-        sw_scores[qr][kv] = score;
-        if (score > max_score) {
-          max_score = score;
-        }
-      }
-
-      double denom = 0.0;
-      for (int kv = 0; kv < tc->seq_len; kv++) {
-        denom += exp((double)(sw_scores[qr][kv] - max_score));
-      }
-      for (int kv = 0; kv < tc->seq_len; kv++) {
-        const float prob =
-            (float)(exp((double)(sw_scores[qr][kv] - max_score)) / denom);
-        sw_probs[qr][kv] = prob;
-        attn_probs_bf16[qr][kv] = float_to_bf16(prob);
-      }
-    }
-    stats->attn_accel_cycles += ws_read_cycles() - softmax_start;
-
-    uint64_t pv_cycles = 0;
-    rc = gemmini_gemm_bf16(
-        &attn_probs_bf16[0][0],
-        TINY_BERT_MAX_SEQ_LEN,
-        &v[0][base],
-        TINY_BERT_MAX_D_MODEL,
-        &out[0][base],
-        TINY_BERT_MAX_D_MODEL,
-        tc->seq_len,
-        tc->head_dim,
-        tc->seq_len,
-        ACC_SCALE_IDENTITY,
-        &pv_cycles);
-    stats->attn_value_cycles += pv_cycles;
-    stats->attn_accel_cycles += pv_cycles;
-    if (rc != WS_GEMM_OK) {
-      stats->attn_e2e_cycles += ws_read_cycles() - total_start;
-      return rc;
-    }
-  }
-  stats->attn_e2e_cycles += ws_read_cycles() - total_start;
-  return WS_GEMM_OK;
-}
-#endif
-
 static int hw_attention_heads(
     const tiny_bert_case_t *tc,
     const fpga_safe_attention_workspace_t *workspace,
     tiny_bert_hw_stats_t *stats) {
-#ifdef GIRDAP_USE_GEMMINI
-  (void)workspace;
-  return gemmini_attention_heads(tc, q_proj, k_proj, v_proj, context, stats);
-#elif GIRDAP_HW_ATTENTION
+#if GIRDAP_HW_ATTENTION
   if (!mask_all_valid(tc)) {
     return TINY_BERT_ERR_MASK_UNSUPPORTED;
   }
@@ -1021,16 +818,9 @@ static int hw_tiny_bert_forward(
   stats->tanh_cycles += ws_read_cycles() - stage_start;
 
   if (rc == WS_GEMM_OK) {
-    memset(classifier_out, 0, sizeof(classifier_out));
     rc = hw_gemm(pool, tc->d_model, tc->classifier_w, tc->num_classes,
-                 classifier_out, TINY_BERT_CLASSIFIER_STRIDE,
-                 1, tc->num_classes, tc->d_model, gemm_workspace,
-                 &stats->classifier_cycles);
-    if (rc == WS_GEMM_OK) {
-      for (int i = 0; i < tc->num_classes; i++) {
-        logits[i] = classifier_out[i];
-      }
-    }
+                 logits, tc->num_classes, 1, tc->num_classes, tc->d_model,
+                 gemm_workspace, &stats->classifier_cycles);
   }
   stage_start = ws_read_cycles();
   add_bias_inplace_bf16(logits, tc->num_classes, tc->classifier_b, 1, tc->num_classes);
@@ -1079,10 +869,6 @@ static uint64_t hw_stats_total_cycles(const tiny_bert_hw_stats_t *stats) {
 }
 
 int main(void) {
-#ifdef GIRDAP_USE_GEMMINI
-  gemmini_flush(0);
-#endif
-
   const ws_gemm_workspace_t gemm_workspace =
       ws_gemm8_make_workspace(gemm_a_tiles, gemm_b_tiles, gemm_c_words,
                               TINY_BERT_MAX_SEQ_LEN,
@@ -1095,28 +881,15 @@ int main(void) {
                                          TINY_BERT_MAX_HEAD_DIM,
                                          TINY_BERT_MAX_HEAD_DIM);
 
-#ifdef GIRDAP_USE_GEMMINI
-  printf("=== Gemmini Tiny-BERT BF16 Inference Test ===\n");
-#else
   printf("=== Girdap Tiny-BERT Inference Test ===\n");
-#endif
   printf("mode: %s  hardware: matmul=%d attention=%d softmax=%d\n",
          GIRDAP_BENCHMARK_MODE, GIRDAP_HW_MATMUL, GIRDAP_HW_ATTENTION,
          GIRDAP_HW_SOFTMAX);
-#ifdef GIRDAP_USE_GEMMINI
-  printf("gemmini: DIM=%d elem_bits=%d acc_bits=%d custom=%d\n",
-         DIM, ELEM_T_EXP_BITS + ELEM_T_SIG_BITS, ACC_T_EXP_BITS + ACC_T_SIG_BITS,
-         XCUSTOM_ACC);
-  printf("RUN_INFO_JSON {\"workload\":\"tiny-bert\",\"mode\":\"%s\",\"backend\":\"gemmini-bf16\",\"dim\":%d,\"elem_bits\":%d,\"acc_bits\":%d,\"opcode\":%d}\n",
-         GIRDAP_BENCHMARK_MODE, DIM, ELEM_T_EXP_BITS + ELEM_T_SIG_BITS,
-         ACC_T_EXP_BITS + ACC_T_SIG_BITS, XCUSTOM_ACC);
-#else
   printf("opcodes: matmul=%d attention=%d softmax=%d\n",
          SA_MATMUL_OPCODE, SA_ATTN_OPCODE, SOFTMAX_OPCODE);
   printf("RUN_INFO_JSON {\"workload\":\"tiny-bert\",\"mode\":\"%s\",\"matmul_hw\":%d,\"attention_hw\":%d,\"softmax_hw\":%d,\"matmul_opcode\":%d,\"attention_opcode\":%d,\"softmax_opcode\":%d}\n",
          GIRDAP_BENCHMARK_MODE, GIRDAP_HW_MATMUL, GIRDAP_HW_ATTENTION,
          GIRDAP_HW_SOFTMAX, SA_MATMUL_OPCODE, SA_ATTN_OPCODE, SOFTMAX_OPCODE);
-#endif
 
   int total_mismatches = 0;
   for (int i = 0; i < tiny_bert_case_count; i++) {
@@ -1148,13 +921,8 @@ int main(void) {
     printf("  shape : seq=%d d_model=%d heads=%d head_dim=%d hidden=%d layers=%d vocab=%d classes=%d\n",
            tc->seq_len, tc->d_model, tc->n_heads, tc->head_dim,
            tc->hidden_dim, tc->n_layers, tc->vocab_size, tc->num_classes);
-#ifdef GIRDAP_USE_GEMMINI
-    printf("  mode  : %s  backend=gemmini-bf16 dim=%d opcode=%d\n",
-           GIRDAP_BENCHMARK_MODE, DIM, XCUSTOM_ACC);
-#else
     printf("  mode  : %s  opcodes: matmul=%d attention=%d softmax=%d\n",
            GIRDAP_BENCHMARK_MODE, SA_MATMUL_OPCODE, SA_ATTN_OPCODE, SOFTMAX_OPCODE);
-#endif
     printf("  status: %s  hw_rc=%d raw_hw_rc=%lu mismatches=%d\n",
            (hw_rc == WS_GEMM_OK && mismatches == 0) ? "PASS" : "FAIL",
            hw_rc, (unsigned long)stats.raw_hw_rc, mismatches);
