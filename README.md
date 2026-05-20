@@ -54,20 +54,20 @@ The collated per-case metrics are in
 The table reports unique result rows; repeated TinyBERT attention+matmul rows in
 `tinybert_attn_matmul_v2.txt` match rows already present in `v1`.
 
-| Workload | Hardware mode | Passing cases | Speedup range | Geomean speedup | Aggregate speedup | Max abs diff |
+| Workload | Hardware config | Passing cases | Speedup range | Geomean speedup | Aggregate speedup | Max abs diff |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Attention block/operator | attention+matmul | 28/28 | 12.0x-92.3x | 28.2x | 73.4x | 0.07507 |
-| Attention block/operator | attention-only | 28/28 | 11.7x-92.3x | 28.2x | 73.4x | 0.07507 |
-| Attention block/operator | matmul-only | 28/28 | 1.4x-13.5x | 3.2x | 9.3x | 0.09136 |
-| Attention block/operator | softmax-only | 28/28 | 0.7x-1.9x | 1.1x | 0.8x | 0.16992 |
-| TinyBERT | attention+matmul | 11/11 | 8.4x-71.8x | 27.4x | 56.5x | 0.03393 |
-| TinyBERT | attention-only | 6/6 | 1.2x-1.8x | 1.4x | 1.5x | 0.00292 |
-| TinyBERT | matmul-only | 5/5 | 2.8x-5.5x | 4.0x | 3.2x | 0.03222 |
-| TinyBERT | softmax-only | 6/6 | 1.0x-1.1x | 1.0x | 1.0x | 0.00292 |
-| GPT-2 prefill | attention+matmul | 6/6 | 6.2x-30.1x | 13.1x | 21.3x | 0.24218 |
-| GPT-2 prefill | attention-only | 6/6 | 1.0x-1.1x | 1.0x | 1.1x | 0.00781 |
-| GPT-2 prefill | matmul-only | 6/6 | 5.0x-13.5x | 7.5x | 9.3x | 0.24218 |
-| GPT-2 prefill | softmax-only | 6/6 | 1.0x-1.0x | 1.0x | 1.0x | 0.04345 |
+| Attention block/operator | iri | 28/28 | 12.0x-92.3x | 28.2x | 73.4x | 0.07507 |
+| Attention block/operator | vasat | 28/28 | 11.7x-92.3x | 28.2x | 73.4x | 0.07507 |
+| Attention block/operator | kucuk | 28/28 | 1.4x-13.5x | 3.2x | 9.3x | 0.09136 |
+| Attention block/operator | minik | 28/28 | 0.7x-1.9x | 1.1x | 0.8x | 0.16992 |
+| TinyBERT | iri | 11/11 | 8.4x-71.8x | 27.4x | 56.5x | 0.03393 |
+| TinyBERT | vasat | 6/6 | 1.2x-1.8x | 1.4x | 1.5x | 0.00292 |
+| TinyBERT | kucuk | 5/5 | 2.8x-5.5x | 4.0x | 3.2x | 0.03222 |
+| TinyBERT | minik | 6/6 | 1.0x-1.1x | 1.0x | 1.0x | 0.00292 |
+| GPT-2 prefill | iri | 6/6 | 6.2x-30.1x | 13.1x | 21.3x | 0.24218 |
+| GPT-2 prefill | vasat | 6/6 | 1.0x-1.1x | 1.0x | 1.1x | 0.00781 |
+| GPT-2 prefill | kucuk | 6/6 | 5.0x-13.5x | 7.5x | 9.3x | 0.24218 |
+| GPT-2 prefill | minik | 6/6 | 1.0x-1.0x | 1.0x | 1.0x | 0.04345 |
 
 The main trend is that Girdap İri is the only configuration that consistently
 turns the raw accelerator speed into model-level speedup. On TinyBERT it reaches
