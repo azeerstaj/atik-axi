@@ -36,6 +36,7 @@ SRCS        := $(wildcard $(SRC_DIR)/*.c)
 COMMON_SRCS := $(wildcard $(COMMON_DIR)/*.c)
 GEMMINI_TEST_ROOT ?= ../../gemmini/software/gemmini-rocc-tests
 GEMMINI_CFLAGS ?= -Igemmini -I$(GEMMINI_TEST_ROOT)
+GEMMINI_BF16_DEFAULT_CFLAGS ?= -Igemmini-bf16-default -I$(GEMMINI_TEST_ROOT)
 
 # Create a list of target ELFs and DUMPs based on the source filenames
 # src/foo.c -> build/foo.riscv
@@ -63,6 +64,9 @@ $(BUILD_DIR)/gemmini_bf16_gemm_sanity.riscv: $(SRC_DIR)/gemmini_bf16_gemm_sanity
 
 $(BUILD_DIR)/gemmini_bf16_minimal.riscv: $(SRC_DIR)/gemmini_bf16_minimal.c gemmini/include/gemmini_params.h | $(BUILD_DIR)
 	$(RISCV_CC) $(CFLAGS) $(GEMMINI_CFLAGS) -MMD -MP -MF $(@:.riscv=.d) -o $@ $< -lm
+
+$(BUILD_DIR)/gemmini_bf16_default_minimal.riscv: $(SRC_DIR)/gemmini_bf16_minimal.c gemmini-bf16-default/include/gemmini_params.h | $(BUILD_DIR)
+	$(RISCV_CC) $(CFLAGS) $(GEMMINI_BF16_DEFAULT_CFLAGS) -MMD -MP -MF $(@:.riscv=.d) -o $@ $< -lm
 
 $(COMMON_BUILD_DIR)/%.o: $(COMMON_DIR)/%.c | $(COMMON_BUILD_DIR)
 	$(RISCV_CC) $(CFLAGS) -MMD -MP -MF $(@:.o=.d) -c -o $@ $<

@@ -19,25 +19,15 @@
 #define MAX_N 16
 #define MAX_K 16
 
-#if DIM != 8
-#error "gemmini_bf16_minimal expects GemminiBF16Default8 software params with DIM=8"
+#if DIM != 8 && DIM != 4
+#error "gemmini_bf16_minimal expects Gemmini BF16 software params with DIM=4 or DIM=8"
 #endif
 
 #ifndef ELEM_T_IS_FLOAT
 #error "gemmini_bf16_minimal expects BF16/float Gemmini software params"
 #endif
 
-static elem_t static_in[DIM][DIM] row_align(1) = {
-    {0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00},
-    {0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00},
-    {0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00},
-    {0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00},
-    {0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00},
-    {0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00},
-    {0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00},
-    {0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00},
-};
-
+static elem_t static_in[DIM][DIM] row_align(1);
 static elem_t runtime_in[DIM][DIM] row_align(1);
 static elem_t mvout_buf[DIM][DIM] row_align(1);
 
@@ -278,8 +268,13 @@ int main(void) {
   printf("DIRECT_GEMM_HEADER,name,dataflow,alias_operands,cycles,max_abs_diff_x100000,tolerance_x100000,mismatches\n");
   printf("GEMM_HEADER,name,M,N,K,cycles,max_abs_diff_x100000,tolerance_x100000,mismatches\n");
 
+  static const elem_t static_pattern[8] = {
+      0x3f80, 0x4000, 0x4040, 0x4080, 0xbf80, 0xc000, 0x0000, 0x3f00,
+  };
+
   for (int r = 0; r < DIM; r++) {
     for (int c = 0; c < DIM; c++) {
+      static_in[r][c] = static_pattern[c & 7];
       const float value = (float)((r * DIM + c) % 9 - 4) * 0.25f;
       runtime_in[r][c] = float_to_bf16(value);
     }
