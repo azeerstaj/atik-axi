@@ -217,12 +217,62 @@ static int run_gemm(
   return mismatches;
 }
 
+static int run_direct_gemm_8x8(
+    const char *name,
+    gemm_pattern_t pattern,
+    int dataflow,
+    uint32_t tolerance_x100000) {
+  fill_gemm(DIM, DIM, DIM, pattern);
+
+  gemmini_flush(0);
+  gemmini_config_ld(DIM * sizeof(elem_t));
+
+  const uint32_t a_addr = 0;
+  const uint32_t b_addr = DIM;
+  const uint32_t c_addr = 2 * DIM;
+  const uint32_t c_addr_acc = 1u << (ADDR_LEN - 1);
+
+  gemmini_mvin(mat_a, a_addr);
+  gemmini_mvin(mat_b, b_addr);
+
+  const uint64_t start = read_cycles();
+  if (dataflow == OUTPUT_STATIONARY) {
+    gemmini_config_st(DIM * sizeof(elem_t));
+    gemmini_config_ex(OUTPUT_STATIONARY, NO_ACTIVATION, 0);
+    gemmini_preload_zeros(c_addr);
+    gemmini_compute_preloaded(a_addr, b_addr);
+    gemmini_mvout(mat_hw, c_addr);
+  } else {
+    gemmini_extended_config_st(DIM * sizeof(elem_t), NO_ACTIVATION,
+                               ACC_SCALE_IDENTITY);
+    gemmini_config_ex(WEIGHT_STATIONARY, 0, 0);
+    gemmini_preload(b_addr, c_addr_acc);
+    gemmini_compute_preloaded(a_addr, GARBAGE_ADDR);
+    gemmini_mvout(mat_hw, c_addr_acc);
+  }
+  gemmini_fence();
+  const uint64_t cycles = read_cycles() - start;
+
+  uint32_t max_abs_diff_x100000 = 0;
+  const int mismatches = compare_matrix(
+      name, &mat_ref[0][0], &mat_hw[0][0], DIM, DIM, MAX_N,
+      tolerance_x100000, &max_abs_diff_x100000);
+
+  printf("DIRECT_GEMM_DATA,%s,%s,%lu,%u,%u,%d\n", name,
+         dataflow == OUTPUT_STATIONARY ? "OS" : "WS", cycles,
+         max_abs_diff_x100000, tolerance_x100000, mismatches);
+  print_bf16_row("  ref_row0:", mat_ref[0], DIM);
+  print_bf16_row("  got_row0:", mat_hw[0], DIM);
+  return mismatches;
+}
+
 int main(void) {
   printf("=== Gemmini BF16 Minimal Viable Test ===\n");
   printf("gemmini: DIM=%d elem_bits=%d acc_bits=%d custom=%d\n",
          DIM, ELEM_T_EXP_BITS + ELEM_T_SIG_BITS,
          ACC_T_EXP_BITS + ACC_T_SIG_BITS, XCUSTOM_ACC);
   printf("MVIN_HEADER,name,cycles,max_abs_diff_x100000,mismatches\n");
+  printf("DIRECT_GEMM_HEADER,name,dataflow,cycles,max_abs_diff_x100000,tolerance_x100000,mismatches\n");
   printf("GEMM_HEADER,name,M,N,K,cycles,max_abs_diff_x100000,tolerance_x100000,mismatches\n");
 
   for (int r = 0; r < DIM; r++) {
@@ -235,6 +285,14 @@ int main(void) {
   int total_mismatches = 0;
   total_mismatches += run_mvin_mvout("MVIN_STATIC", static_in);
   total_mismatches += run_mvin_mvout("MVIN_RUNTIME", runtime_in);
+  total_mismatches += run_direct_gemm_8x8("DIRECT_GEMM_ONES_8x8x8_OS",
+                                          GEMM_ONES, OUTPUT_STATIONARY, 0);
+  total_mismatches += run_direct_gemm_8x8("DIRECT_GEMM_ONES_8x8x8_WS",
+                                          GEMM_ONES, WEIGHT_STATIONARY, 0);
+  total_mismatches += run_direct_gemm_8x8("DIRECT_GEMM_MIXED_8x8x8_OS",
+                                          GEMM_MIXED, OUTPUT_STATIONARY, 2000);
+  total_mismatches += run_direct_gemm_8x8("DIRECT_GEMM_MIXED_8x8x8_WS",
+                                          GEMM_MIXED, WEIGHT_STATIONARY, 2000);
   total_mismatches += run_gemm("GEMM_ONES_8x8x8_WS", 8, 8, 8, GEMM_ONES, 0);
   total_mismatches += run_gemm("GEMM_ONES_8x8x16_WS", 8, 8, 16, GEMM_ONES, 0);
   total_mismatches += run_gemm("GEMM_MIXED_8x8x16_WS", 8, 8, 16, GEMM_MIXED, 2000);
