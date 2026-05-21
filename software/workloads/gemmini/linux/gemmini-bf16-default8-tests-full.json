@@ -1,0 +1,10 @@
+{
+  "name" : "girdap-gemmini-bf16-default8-tests-full",
+  "workdir" : ".",
+  "base" : "br-base.json",
+  "overlay" : "overlay",
+  "host-init" : "host-init-bf16-default8.sh",
+  "command": "/root/run-tests-full.sh",
+  "rootfs-size" : "16GiB",
+  "spike-args": "--extension=gemmini"
+}

@@ -1,3 +1,8 @@
+GemminiDefault:
+    agfi: agfi-0dc61f4c87b894335
+    deploy_quintuplet_override: null
+    custom_runtime_config: null
+
 GemminiBF16Default8:
     agfi: agfi-059dca37d958b4c11
     deploy_quintuplet_override: null
