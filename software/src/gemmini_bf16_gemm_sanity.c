@@ -17,7 +17,8 @@
 
 static elem_t mat_a[MAX_M][MAX_K] row_align(1);
 static elem_t mat_b[MAX_K][MAX_N] row_align(1);
-static elem_t mat_c[MAX_M][MAX_N] row_align(1);
+static elem_t mat_hw_os[MAX_M][MAX_N] row_align(1);
+static elem_t mat_hw_ws[MAX_M][MAX_N] row_align(1);
 static elem_t mat_ref[MAX_M][MAX_N] row_align(1);
 static elem_t mat_cpu_lib[MAX_M][MAX_N] row_align(1);
 
@@ -77,7 +78,8 @@ static void fill_inputs(const gemm_case_t *tc, int case_idx) {
     }
   }
 
-  memset(mat_c, 0, sizeof(mat_c));
+  memset(mat_hw_os, 0, sizeof(mat_hw_os));
+  memset(mat_hw_ws, 0, sizeof(mat_hw_ws));
   memset(mat_ref, 0, sizeof(mat_ref));
   memset(mat_cpu_lib, 0, sizeof(mat_cpu_lib));
 }
@@ -96,7 +98,10 @@ static uint64_t cpu_gemm_ref(const gemm_case_t *tc) {
   return read_cycles() - start;
 }
 
-static uint64_t gemmini_gemm(const gemm_case_t *tc) {
+static uint64_t gemmini_gemm(
+    const gemm_case_t *tc,
+    elem_t out[MAX_M][MAX_N],
+    enum tiled_matmul_type_t dataflow) {
   gemmini_fence();
   const uint64_t start = read_cycles();
   tiled_matmul_auto(
@@ -106,7 +111,7 @@ static uint64_t gemmini_gemm(const gemm_case_t *tc) {
       (elem_t *)mat_a,
       (elem_t *)mat_b,
       NULL,
-      (elem_t *)mat_c,
+      (elem_t *)out,
       MAX_K,
       MAX_N,
       0,
@@ -123,7 +128,7 @@ static uint64_t gemmini_gemm(const gemm_case_t *tc) {
       false,
       false,
       0,
-      WS);
+      dataflow);
   gemmini_fence();
   return read_cycles() - start;
 }
@@ -174,6 +179,8 @@ static void print_sample(
 }
 
 static int compare_outputs(
+    const char *tag,
+    const elem_t out[MAX_M][MAX_N],
     const gemm_case_t *tc,
     int case_idx,
     uint32_t *max_abs_diff_x100000,
@@ -185,11 +192,11 @@ static int compare_outputs(
   for (int r = 0; r < tc->m; r++) {
     for (int c = 0; c < tc->n; c++) {
       const float ref = bf16_to_float(mat_ref[r][c]);
-      const float got = bf16_to_float(mat_c[r][c]);
+      const float got = bf16_to_float(out[r][c]);
       const float diff = fabsf(got - ref);
       const uint32_t diff_x100000 = (uint32_t)(diff * 100000.0f);
 
-      if (mat_ref[r][c] != mat_c[r][c]) {
+      if (mat_ref[r][c] != out[r][c]) {
         (*bit_mismatches)++;
       }
       if (diff_x100000 > *max_abs_diff_x100000) {
@@ -197,8 +204,8 @@ static int compare_outputs(
       }
       if (diff_x100000 > tc->tolerance_x100000) {
         if (mismatches < SAMPLE_COUNT) {
-          printf("Mismatch case=%d name=%s row=%d col=%d ref_bf16=0x%04x hw_bf16=0x%04x ref=",
-                 case_idx, tc->name, r, c, mat_ref[r][c], mat_c[r][c]);
+          printf("Mismatch path=%s case=%d name=%s row=%d col=%d ref_bf16=0x%04x hw_bf16=0x%04x ref=",
+                 tag, case_idx, tc->name, r, c, mat_ref[r][c], out[r][c]);
           print_float_inline(ref);
           printf("hw=");
           print_float_inline(got);
@@ -234,24 +241,31 @@ int main(void) {
   printf("gemmini: DIM=%d elem_bits=%d acc_bits=%d custom=%d\n",
          DIM, ELEM_T_EXP_BITS + ELEM_T_SIG_BITS,
          ACC_T_EXP_BITS + ACC_T_SIG_BITS, XCUSTOM_ACC);
-  printf("CSV_HEADER,case,name,M,N,K,manual_cpu_cycles,gemmini_cpu_cycles,hw_cycles,speedup_x100,max_abs_diff_x100000,tolerance_x100000,bit_mismatches,mismatches,cpu_lib_bit_mismatches\n");
+  printf("CSV_HEADER,case,name,M,N,K,manual_cpu_cycles,gemmini_cpu_cycles,os_cycles,ws_cycles,os_speedup_x100,ws_speedup_x100,os_max_abs_diff_x100000,ws_max_abs_diff_x100000,tolerance_x100000,os_bit_mismatches,ws_bit_mismatches,os_mismatches,ws_mismatches,cpu_lib_bit_mismatches\n");
 
   int total_mismatches = 0;
   for (int i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
     const gemm_case_t *tc = &cases[i];
     fill_inputs(tc, i);
 
-    const uint64_t hw_cycles = gemmini_gemm(tc);
+    const uint64_t os_cycles = gemmini_gemm(tc, mat_hw_os, OS);
+    const uint64_t ws_cycles = gemmini_gemm(tc, mat_hw_ws, WS);
     const uint64_t cpu_cycles = cpu_gemm_ref(tc);
     const uint64_t gemmini_cpu_cycles = gemmini_cpu_gemm(tc);
-    const uint64_t speedup_x100 =
-        hw_cycles == 0 ? 0 : (cpu_cycles * 100u) / hw_cycles;
+    const uint64_t os_speedup_x100 =
+        os_cycles == 0 ? 0 : (cpu_cycles * 100u) / os_cycles;
+    const uint64_t ws_speedup_x100 =
+        ws_cycles == 0 ? 0 : (cpu_cycles * 100u) / ws_cycles;
 
-    uint32_t max_abs_diff_x100000 = 0;
-    int bit_mismatches = 0;
-    const int mismatches = compare_outputs(
-        tc, i, &max_abs_diff_x100000, &bit_mismatches);
-    total_mismatches += mismatches;
+    uint32_t os_max_abs_diff_x100000 = 0;
+    uint32_t ws_max_abs_diff_x100000 = 0;
+    int os_bit_mismatches = 0;
+    int ws_bit_mismatches = 0;
+    const int os_mismatches = compare_outputs(
+        "OS", mat_hw_os, tc, i, &os_max_abs_diff_x100000, &os_bit_mismatches);
+    const int ws_mismatches = compare_outputs(
+        "WS", mat_hw_ws, tc, i, &ws_max_abs_diff_x100000, &ws_bit_mismatches);
+    total_mismatches += os_mismatches + ws_mismatches;
 
     int cpu_lib_bit_mismatches = 0;
     for (int r = 0; r < tc->m; r++) {
@@ -262,21 +276,27 @@ int main(void) {
       }
     }
 
-    printf("CSV_DATA,%d,%s,%d,%d,%d,%lu,%lu,%lu,%lu,%u,%u,%u,%d,%d,%d\n",
+    printf("CSV_DATA,%d,%s,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%u,%d,%d,%d,%d,%d\n",
            i, tc->name, tc->m, tc->n, tc->k,
            (unsigned long)cpu_cycles,
            (unsigned long)gemmini_cpu_cycles,
-           (unsigned long)hw_cycles,
-           (unsigned long)speedup_x100,
-           max_abs_diff_x100000,
+           (unsigned long)os_cycles,
+           (unsigned long)ws_cycles,
+           (unsigned long)os_speedup_x100,
+           (unsigned long)ws_speedup_x100,
+           os_max_abs_diff_x100000,
+           ws_max_abs_diff_x100000,
            tc->tolerance_x100000,
-           bit_mismatches,
-           mismatches,
+           os_bit_mismatches,
+           ws_bit_mismatches,
+           os_mismatches,
+           ws_mismatches,
            cpu_lib_bit_mismatches);
 
     const int sample_cols = tc->n < SAMPLE_COUNT ? tc->n : SAMPLE_COUNT;
-    print_sample("ref", mat_ref, 0, 0, sample_cols);
-    print_sample("hw ", mat_c, 0, 0, sample_cols);
+    print_sample("ref  ", mat_ref, 0, 0, sample_cols);
+    print_sample("hw_os", mat_hw_os, 0, 0, sample_cols);
+    print_sample("hw_ws", mat_hw_ws, 0, 0, sample_cols);
   }
 
   if (total_mismatches == 0) {
