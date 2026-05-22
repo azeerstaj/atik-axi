@@ -264,6 +264,8 @@ def main() -> int:
         src_dir = area.generated_src_dir(chipyard_root, design.chipyard_config)
         files = area.verilog_files(src_dir)
         local_files = area.copy_or_reference_verilog(files, design_dir, args.copy_verilog)
+        if not args.plan:
+            area.waive_intentional_lint(local_files)
         rtl_files = local_files if args.no_prune_verilog else area.prune_verilog_to_top(local_files, args.top)
         required = required_tokens_for_design(design, local_files, args)
 

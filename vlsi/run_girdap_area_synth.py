@@ -28,7 +28,7 @@ from typing import Iterable
 
 
 CHIPYARD_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OPENLANE2_ROOT = Path("/home/ubuntu/firesim_build_disk/openlane2")
+DEFAULT_OPENLANE2_ROOT = Path("/home/ubuntu/openlane2")
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "out" / "girdap-area"
 
 
@@ -47,6 +47,28 @@ class GirdapDesign:
 
 
 GIRDAP_DESIGNS: tuple[GirdapDesign, ...] = (
+    GirdapDesign(
+        flavor="iri_mem",
+        chipyard_config="Matmul8x8AndOnlineAttention8x8BF16MemPackerExpLut512Config",
+        description="8x8 BF16 matmul + 8x8 BF16 online attention, memory-backed buffers, HW packer, exp LUT, maxK=512",
+        components=(
+            GirdapComponent(
+                name="attention",
+                top_patterns=(
+                    r"^FpgaSafeOnlineAttention8x8MemRoCC$",
+                    r".*OnlineAttention8x8.*Mem.*",
+                ),
+            ),
+            GirdapComponent(
+                name="matmul",
+                top_patterns=(
+                    r"^SystolicArrayFpgaSafe8x8MemRoCC$",
+                    r".*FpgaSafe8x8Mem.*",
+                    r".*Matmul.*8x8.*Mem.*",
+                ),
+            ),
+        ),
+    ),
     GirdapDesign(
         flavor="iri",
         chipyard_config="Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLut512Config",
@@ -312,6 +334,27 @@ def copy_or_reference_verilog(files: list[Path], design_dir: Path, copy: bool) -
     return copied
 
 
+def waive_intentional_lint(files: Iterable[Path]) -> None:
+    """Annotate known intentional generated constructs before OpenLane lint.
+
+    Chipyard emits EICG_wrapper as a latch-based integrated clock gate model.
+    Verilator is right that this infers a latch, but OpenLane's lint step treats
+    LATCH as fatal unless the wrapper carries an explicit waiver.
+    """
+    for path in files:
+        if path.name != "EICG_wrapper.v":
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "verilator lint_off LATCH" in text:
+            continue
+        marker = "/* verilator lint_off UNOPTFLAT */"
+        if marker in text:
+            text = text.replace(marker, marker + "\n/* verilator lint_off LATCH */", 1)
+        else:
+            text = "/* verilator lint_off LATCH */\n" + text
+        path.write_text(text, encoding="utf-8")
+
+
 def modules_in_files(files: Iterable[Path]) -> dict[str, Path]:
     modules: dict[str, Path] = {}
     for path in files:
@@ -442,9 +485,23 @@ def write_openlane_config(
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
+def openlane_executable(args: argparse.Namespace) -> str:
+    direct = shutil.which("openlane")
+    if direct:
+        return shell_quote(direct)
+
+    module_entry = args.openlane2_root / "openlane" / "__main__.py"
+    if module_entry.exists():
+        root = shell_quote(args.openlane2_root)
+        return f"PYTHONPATH={root} python3 -m openlane"
+
+    return "openlane"
+
+
 def openlane_command(args: argparse.Namespace, config_path: Path, design_dir: Path, tag: str) -> str:
+    openlane = openlane_executable(args)
     return (
-        f"openlane -j {args.jobs} --design-dir {shell_quote(design_dir)} "
+        f"{openlane} -j {args.jobs} --design-dir {shell_quote(design_dir)} "
         f"--run-tag {shell_quote(tag)} {shell_quote(config_path)}"
     )
 
@@ -660,6 +717,8 @@ def main() -> int:
             component_dir = design_dir / component.name
             component_logs_dir = component_dir / "logs"
             local_files = copy_or_reference_verilog(files, component_dir, args.copy_verilog)
+            if not args.plan:
+                waive_intentional_lint(local_files)
             top = choose_top(design, component, local_files, args.top_mode, top_overrides)
             synth_files = local_files if args.no_prune_verilog else prune_verilog_to_top(local_files, top)
             config_path = component_dir / "config.json"

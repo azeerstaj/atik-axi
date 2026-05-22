@@ -5,6 +5,7 @@ import girdap.{
   FusedOnlineAttention8x8BF16FpgaSafePackerExpLut,
   Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLut,
   Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLut512,
+  Matmul8x8AndOnlineAttention8x8BF16MemPackerExpLut512,
   MatmulAccel8x8BF16FpgaSafe,
   SoftmaxAccel
 }
@@ -27,6 +28,14 @@ class Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLutConfig extends Confi
 
 class Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLut512Config extends Config(
   new Matmul8x8AndOnlineAttention8x8BF16FpgaSafePackerExpLut512 ++
+    new freechips.rocketchip.subsystem.WithoutTLMonitors ++
+    new freechips.rocketchip.rocket.WithNHugeCores(1) ++
+    new chipyard.config.WithSystemBusWidth(128) ++
+    new chipyard.config.AbstractConfig
+)
+
+class Matmul8x8AndOnlineAttention8x8BF16MemPackerExpLut512Config extends Config(
+  new Matmul8x8AndOnlineAttention8x8BF16MemPackerExpLut512 ++
     new freechips.rocketchip.subsystem.WithoutTLMonitors ++
     new freechips.rocketchip.rocket.WithNHugeCores(1) ++
     new chipyard.config.WithSystemBusWidth(128) ++
