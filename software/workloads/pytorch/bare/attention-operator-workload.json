@@ -1,0 +1,7 @@
+{
+  "name" : "attention-operator-workload-bare",
+  "workdir" : "../../..",
+  "base" : "bare-base.json",
+  "host-init" : "workloads/pytorch/bare/attention-operator-workload-host-init.sh",
+  "bin" : "build/pytorch_workload.riscv"
+}

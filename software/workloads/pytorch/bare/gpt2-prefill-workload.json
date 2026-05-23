@@ -1,0 +1,7 @@
+{
+  "name" : "gpt2-prefill-workload-bare",
+  "workdir" : "../../..",
+  "base" : "bare-base.json",
+  "host-init" : "workloads/pytorch/bare/gpt2-prefill-workload-host-init.sh",
+  "bin" : "build/pytorch_workload.riscv"
+}

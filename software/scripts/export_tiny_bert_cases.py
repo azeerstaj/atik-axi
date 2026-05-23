@@ -106,7 +106,7 @@ def make_case(case: TinyBertCase) -> dict[str, list[int] | int]:
     if case.d_model % case.n_heads != 0:
         raise ValueError(f"{case.name}: d_model must be divisible by n_heads")
     if case.d_model > 512 or case.hidden_dim > 512 or case.head_dim > 512:
-        raise ValueError(f"{case.name}: dimensions exceed current RTL maxK=512")
+        raise ValueError(f"{case.name}: dimensions exceed current benchmark envelope")
 
     generator = torch.Generator(device="cpu")
     generator.manual_seed(case.seed)

@@ -10,7 +10,7 @@ val rocketVersion = "1.6-SNAPSHOT"
 
 lazy val root = (project in file("."))
   .settings(
-    name := "girdap",
+    name := "atik",
     libraryDependencies ++= Seq(
       "org.chipsalliance" %% "chisel" % chiselVersion,
       "org.chipsalliance" %% "cde" % rocketVersion,
