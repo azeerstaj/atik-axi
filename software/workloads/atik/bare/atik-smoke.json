@@ -1,0 +1,7 @@
+{
+  "name" : "atik-smoke-bare",
+  "workdir" : "../../..",
+  "base" : "bare-base.json",
+  "host-init" : "workloads/atik/bare/atik-smoke-host-init.sh",
+  "bin" : "build/atik_smoke.riscv"
+}
