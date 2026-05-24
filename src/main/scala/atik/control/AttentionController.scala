@@ -38,10 +38,33 @@ class AttentionController(params: AtikParams) extends Module {
   private val colIdxBits = math.max(1, log2Ceil(params.meshCols))
   private val ktIdxBits = math.max(1, log2Ceil(params.matmulKt))
 
-  private val (sIdle :: sInit :: sReqQ :: sWaitQ :: sReqK :: sWaitK ::
-    sReadQkSram :: sLatchQkSram :: sComputeScore :: sNextDChunk ::
-    sReqV :: sWaitV :: sInitPv :: sComputePv :: sNextPv :: sUpdateOnline ::
-    sWriteReq :: sWriteWait :: sNextOut :: sDone :: sError :: Nil) = Enum(21)
+  private val states = Enum(26)
+  private val sIdle = states(0)
+  private val sInit = states(1)
+  private val sReqQ = states(2)
+  private val sWaitQ = states(3)
+  private val sReqK = states(4)
+  private val sWaitK = states(5)
+  private val sReadQkSram = states(6)
+  private val sLatchQkSram = states(7)
+  private val sComputeScore = states(8)
+  private val sNextDChunk = states(9)
+  private val sReqV = states(10)
+  private val sWaitV = states(11)
+  private val sBeginOnline = states(12)
+  private val sOldScale = states(13)
+  private val sRescaleOut = states(14)
+  private val sScoreExp = states(15)
+  private val sInitPv = states(16)
+  private val sComputePv = states(17)
+  private val sNextPv = states(18)
+  private val sCommitOnline = states(19)
+  private val sNormalize = states(20)
+  private val sWriteReq = states(21)
+  private val sWriteWait = states(22)
+  private val sNextOut = states(23)
+  private val sDone = states(24)
+  private val sError = states(25)
   private val state = RegInit(sIdle)
 
   private val descReg = RegInit(0.U.asTypeOf(new AtikDescriptor(params)))
@@ -53,6 +76,8 @@ class AttentionController(params: AtikParams) extends Module {
   private val dIdx = RegInit(0.U(32.W))
   private val chunkD = RegInit(0.U(ktIdxBits.W))
   private val pvIdx = RegInit(0.U(colIdxBits.W))
+  private val scalarRow = RegInit(0.U(rowIdxBits.W))
+  private val scalarCol = RegInit(0.U(colIdxBits.W))
 
   private val qRaw = RegInit(VecInit(Seq.fill(params.meshRows)(0.U(params.elemBits.W))))
   private val kRaw = RegInit(VecInit(Seq.fill(params.meshCols)(0.U(params.elemBits.W))))
@@ -68,6 +93,15 @@ class AttentionController(params: AtikParams) extends Module {
   private val rowSumReg = RegInit(VecInit(Seq.fill(params.meshRows)(0.U(params.softmaxBits.W))))
   private val outAccReg = RegInit(VecInit(Seq.fill(params.meshRows) {
     VecInit(Seq.fill(params.meshCols)(0.S(params.accumBits.W)))
+  }))
+  private val newRowMaxReg = RegInit(VecInit(Seq.fill(params.meshRows)(0.S(params.accumBits.W))))
+  private val oldScaleReg = RegInit(VecInit(Seq.fill(params.meshRows)(0.U(params.softmaxBits.W))))
+  private val nextRowSumReg = RegInit(VecInit(Seq.fill(params.meshRows)(0.U(params.softmaxBits.W))))
+  private val scoreExpReg = RegInit(VecInit(Seq.fill(params.meshRows) {
+    VecInit(Seq.fill(params.meshCols)(0.U(params.softmaxBits.W)))
+  }))
+  private val outBf16Reg = RegInit(VecInit(Seq.fill(params.meshRows) {
+    VecInit(Seq.fill(params.meshCols)(0.U(params.elemBits.W)))
   }))
 
   private def elemOffset(index: UInt): UInt = (index << elemOffsetBits).pad(params.addrBits)
@@ -118,17 +152,10 @@ class AttentionController(params: AtikParams) extends Module {
   private val validScore = Wire(Vec(params.meshRows, Vec(params.meshCols, Bool())))
   private val tileRowMax = Wire(Vec(params.meshRows, SInt(params.accumBits.W)))
   private val newRowMax = Wire(Vec(params.meshRows, SInt(params.accumBits.W)))
-  private val oldScale = Wire(Vec(params.meshRows, UInt(params.softmaxBits.W)))
-  private val scoreExp = Wire(Vec(params.meshRows, Vec(params.meshCols, UInt(params.softmaxBits.W))))
-  private val nextRowSum = Wire(Vec(params.meshRows, UInt(params.softmaxBits.W)))
-  private val nextOutAcc = Wire(Vec(params.meshRows, Vec(params.meshCols, SInt(params.accumBits.W))))
-  private val normalizedOut = Wire(Vec(params.meshRows, Vec(params.meshCols, SInt(params.accumBits.W))))
-  private val outBf16 = Wire(Vec(params.meshRows, Vec(params.meshCols, UInt(params.elemBits.W))))
 
-  private val scoreExpLuts = Seq.fill(params.meshRows, params.meshCols)(Module(new ExpLut(params, params.accumFracBits)))
-  private val oldScaleLuts = Seq.fill(params.meshRows)(Module(new ExpLut(params, params.accumFracBits)))
-  private val recipLuts = Seq.fill(params.meshRows)(Module(new ReciprocalLut(params)))
-  private val outConverters = Seq.fill(params.meshRows, params.meshCols)(Module(new FixedToBf16(params, params.accumBits)))
+  private val scalarExp = Module(new ExpLut(params, params.accumFracBits))
+  private val scalarRecip = Module(new ReciprocalLut(params))
+  private val scalarOutConverter = Module(new FixedToBf16(params, params.accumBits))
 
   private val vFixed = Wire(Vec(params.meshCols, Vec(params.meshCols, SInt(params.fixedBits.W))))
   for (kv <- 0 until params.meshCols) {
@@ -154,7 +181,7 @@ class AttentionController(params: AtikParams) extends Module {
   for (r <- 0 until params.meshRows) {
     io.meshA(r) := Mux(
       pvMeshActive,
-      softToMeshFixed(scoreExp(r)(pvIdx)),
+      softToMeshFixed(scoreExpReg(r)(pvIdx)),
       Mux(qBase + r.U < descReg.m, qConverters(r).io.out, 0.S)
     )
   }
@@ -190,36 +217,26 @@ class AttentionController(params: AtikParams) extends Module {
 
     tileRowMax(r) := (0 until params.meshCols).map(kv => maskedScore(r)(kv)).reduce { (a, b) => Mux(a > b, a, b) }
     newRowMax(r) := Mux(rowSumReg(r) === 0.U || tileRowMax(r) > rowMaxReg(r), tileRowMax(r), rowMaxReg(r))
-
-    oldScaleLuts(r).io.in := Mux(
-      rowSumReg(r) === 0.U,
-      0.S(params.accumBits.W),
-      FixedPointUtil.resizeSInt(rowMaxReg(r) - newRowMax(r), params.accumBits)
-    )
-    oldScale(r) := Mux(rowSumReg(r) === 0.U, 0.U, oldScaleLuts(r).io.out)
-
-    for (kv <- 0 until params.meshCols) {
-      scoreExpLuts(r)(kv).io.in := FixedPointUtil.resizeSInt(maskedScore(r)(kv) - newRowMax(r), params.accumBits)
-      scoreExp(r)(kv) := Mux(validScore(r)(kv), scoreExpLuts(r)(kv).io.out, 0.U)
-    }
-
-    val rowSumWidth = params.softmaxBits + log2Ceil(params.meshCols + 2)
-    val scaledOldSum = ((rowSumReg(r) * oldScale(r)) >> params.softmaxFracBits).asUInt
-    val tileSum = (0 until params.meshCols).map(kv => scoreExp(r)(kv).pad(rowSumWidth)).reduce(_ + _)
-    nextRowSum(r) := FixedPointUtil.resizeUInt(scaledOldSum.pad(rowSumWidth) + tileSum, params.softmaxBits)
-    recipLuts(r).io.in := rowSumReg(r)
-
-    for (vc <- 0 until params.meshCols) {
-      val oldOutProduct = outAccReg(r)(vc) * oldScale(r).asSInt
-      val scaledOldOut = (oldOutProduct >> params.softmaxFracBits).asSInt
-      nextOutAcc(r)(vc) := FixedPointUtil.resizeSInt(scaledOldOut, params.accumBits)
-
-      val normProduct = outAccReg(r)(vc) * recipLuts(r).io.out.asSInt
-      normalizedOut(r)(vc) := FixedPointUtil.resizeSInt((normProduct >> params.softmaxFracBits).asSInt, params.accumBits)
-      outConverters(r)(vc).io.in := Mux(qBase + r.U < descReg.m && vColBase + vc.U < descReg.n, normalizedOut(r)(vc), 0.S)
-      outBf16(r)(vc) := outConverters(r)(vc).io.out
-    }
   }
+
+  private val scalarScoreDiff = FixedPointUtil.resizeSInt(
+    maskedScore(scalarRow)(scalarCol) - newRowMaxReg(scalarRow),
+    params.accumBits
+  )
+  private val scalarOldScaleDiff = FixedPointUtil.resizeSInt(
+    rowMaxReg(scalarRow) - newRowMaxReg(scalarRow),
+    params.accumBits
+  )
+  scalarExp.io.in := Mux(state === sOldScale, scalarOldScaleDiff, scalarScoreDiff)
+  scalarRecip.io.in := rowSumReg(scalarRow)
+
+  private val scalarNormProduct = outAccReg(scalarRow)(scalarCol) * scalarRecip.io.out.asSInt
+  private val scalarNormalizedOut = FixedPointUtil.resizeSInt((scalarNormProduct >> params.softmaxFracBits).asSInt, params.accumBits)
+  scalarOutConverter.io.in := Mux(
+    qBase + scalarRow < descReg.m && vColBase + scalarCol < descReg.n,
+    scalarNormalizedOut,
+    0.S
+  )
 
   private val writeCmd = Wire(new TileDmaWriteCommand(params))
   writeCmd.base := outTileBase
@@ -228,7 +245,7 @@ class AttentionController(params: AtikParams) extends Module {
   writeCmd.stride := descReg.ldout
   tileWriter.io.cmd.valid := state === sWriteReq
   tileWriter.io.cmd.bits := writeCmd
-  tileWriter.io.tile := outBf16
+  tileWriter.io.tile := outBf16Reg
 
   private val readCmd = Wire(new TileDmaReadCommand(params))
   readCmd.base := MuxCase(qElemAddr(0.U), Seq(
@@ -277,10 +294,13 @@ class AttentionController(params: AtikParams) extends Module {
 
   private val event = WireDefault(0.U.asTypeOf(new AtikCounterEvent(params)))
   event.totalActive := state =/= sIdle && state =/= sDone && state =/= sError
-  event.computeActive := state === sComputeScore || state === sInitPv || state === sComputePv || state === sUpdateOnline
+  event.computeActive := state === sComputeScore || state === sInitPv || state === sComputePv ||
+    state === sBeginOnline || state === sOldScale || state === sRescaleOut ||
+    state === sScoreExp || state === sCommitOnline || state === sNormalize
   event.meshActive := state === sComputeScore || state === sComputePv
   event.meshIdle := event.totalActive && !(state === sComputeScore || state === sComputePv)
-  event.softmaxActive := state === sInitPv || state === sUpdateOnline
+  event.softmaxActive := state === sBeginOnline || state === sOldScale || state === sRescaleOut ||
+    state === sScoreExp || state === sInitPv || state === sCommitOnline || state === sNormalize
   event.dmaReadActive := tileReader.io.active
   event.dmaWriteActive := tileWriter.io.active
   event.dmaStall := (tileReader.io.memReq.valid && !tileReader.io.memReq.ready) ||
@@ -321,9 +341,14 @@ class AttentionController(params: AtikParams) extends Module {
         qRaw(r) := 0.U
         rowMaxReg(r) := minScore
         rowSumReg(r) := 0.U
+        newRowMaxReg(r) := minScore
+        oldScaleReg(r) := 0.U
+        nextRowSumReg(r) := 0.U
         for (c <- 0 until params.meshCols) {
           score(r)(c) := 0.S
           outAccReg(r)(c) := 0.S
+          scoreExpReg(r)(c) := 0.U
+          outBf16Reg(r)(c) := 0.U
         }
       }
       for (c <- 0 until params.meshCols) {
@@ -419,18 +444,68 @@ class AttentionController(params: AtikParams) extends Module {
           vRaw(tileReader.io.out.bits.row(colIdxBits - 1, 0))(tileReader.io.out.bits.col(colIdxBits - 1, 0)) := tileReader.io.out.bits.data
           when(tileReader.io.out.bits.last) {
             pvIdx := 0.U
-            state := sInitPv
+            state := sBeginOnline
           }
         }
       }
     }
+    is(sBeginOnline) {
+      scalarRow := 0.U
+      scalarCol := 0.U
+      for (r <- 0 until params.meshRows) {
+        newRowMaxReg(r) := newRowMax(r)
+      }
+      state := sOldScale
+    }
+    is(sOldScale) {
+      oldScaleReg(scalarRow) := Mux(rowSumReg(scalarRow) === 0.U, 0.U, scalarExp.io.out)
+      nextRowSumReg(scalarRow) := Mux(
+        rowSumReg(scalarRow) === 0.U,
+        0.U,
+        FixedPointUtil.resizeUInt(((rowSumReg(scalarRow) * scalarExp.io.out) >> params.softmaxFracBits).asUInt, params.softmaxBits)
+      )
+      when(scalarRow === (params.meshRows - 1).U) {
+        scalarRow := 0.U
+        scalarCol := 0.U
+        state := sRescaleOut
+      }.otherwise {
+        scalarRow := scalarRow + 1.U
+      }
+    }
+    is(sRescaleOut) {
+      val oldOutProduct = outAccReg(scalarRow)(scalarCol) * oldScaleReg(scalarRow).asSInt
+      outAccReg(scalarRow)(scalarCol) := FixedPointUtil.resizeSInt((oldOutProduct >> params.softmaxFracBits).asSInt, params.accumBits)
+      when(scalarCol === (params.meshCols - 1).U) {
+        scalarCol := 0.U
+        when(scalarRow === (params.meshRows - 1).U) {
+          scalarRow := 0.U
+          state := sScoreExp
+        }.otherwise {
+          scalarRow := scalarRow + 1.U
+        }
+      }.otherwise {
+        scalarCol := scalarCol + 1.U
+      }
+    }
+    is(sScoreExp) {
+      val expValue = Mux(validScore(scalarRow)(scalarCol), scalarExp.io.out, 0.U)
+      scoreExpReg(scalarRow)(scalarCol) := expValue
+      nextRowSumReg(scalarRow) := FixedPointUtil.resizeUInt(nextRowSumReg(scalarRow) + expValue, params.softmaxBits)
+      when(scalarCol === (params.meshCols - 1).U) {
+        scalarCol := 0.U
+        when(scalarRow === (params.meshRows - 1).U) {
+          scalarRow := 0.U
+          pvIdx := 0.U
+          state := sInitPv
+        }.otherwise {
+          scalarRow := scalarRow + 1.U
+        }
+      }.otherwise {
+        scalarCol := scalarCol + 1.U
+      }
+    }
     is(sInitPv) {
       pvIdx := 0.U
-      for (r <- 0 until params.meshRows) {
-        for (vc <- 0 until params.meshCols) {
-          outAccReg(r)(vc) := nextOutAcc(r)(vc)
-        }
-      }
       state := sComputePv
     }
     is(sComputePv) {
@@ -445,19 +520,21 @@ class AttentionController(params: AtikParams) extends Module {
     }
     is(sNextPv) {
       when(pvIdx.pad(32) + 1.U >= params.meshCols.U || kvBase + pvIdx.pad(32) + 1.U >= descReg.kvLen) {
-        state := sUpdateOnline
+        state := sCommitOnline
       }.otherwise {
         pvIdx := pvIdx + 1.U
         state := sComputePv
       }
     }
-    is(sUpdateOnline) {
+    is(sCommitOnline) {
       for (r <- 0 until params.meshRows) {
-        rowMaxReg(r) := newRowMax(r)
-        rowSumReg(r) := nextRowSum(r)
+        rowMaxReg(r) := newRowMaxReg(r)
+        rowSumReg(r) := nextRowSumReg(r)
       }
       when(onLastKvTile) {
-        state := sWriteReq
+        scalarRow := 0.U
+        scalarCol := 0.U
+        state := sNormalize
       }.otherwise {
         kvBase := nextKvBase
         dIdx := 0.U
@@ -466,9 +543,24 @@ class AttentionController(params: AtikParams) extends Module {
         for (r <- 0 until params.meshRows) {
           for (kv <- 0 until params.meshCols) {
             score(r)(kv) := 0.S
+            scoreExpReg(r)(kv) := 0.U
           }
         }
         state := sReqQ
+      }
+    }
+    is(sNormalize) {
+      outBf16Reg(scalarRow)(scalarCol) := scalarOutConverter.io.out
+      when(scalarCol === (params.meshCols - 1).U) {
+        scalarCol := 0.U
+        when(scalarRow === (params.meshRows - 1).U) {
+          scalarRow := 0.U
+          state := sWriteReq
+        }.otherwise {
+          scalarRow := scalarRow + 1.U
+        }
+      }.otherwise {
+        scalarCol := scalarCol + 1.U
       }
     }
     is(sWriteReq) {

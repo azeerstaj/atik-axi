@@ -12,6 +12,7 @@ parameters:
   NC: value columns per output tile
   KT: d_k chunk depth
   KC: key/value rows per score tile
+  scalar_lanes: number of scalar online-softmax lanes; default 1 for area-first VLSI
 
 inputs:
   desc:
@@ -70,14 +71,13 @@ behavior: |
           load K chunk through DmaReader
           accumulate QK score tile on shared mesh
 
-        scale scores
-        apply causal mask if requested
-        update online softmax row state
-
+        scale scores and apply causal mask
+        schedule scalar online-softmax update over scalar_lanes
         load V tile through DmaReader
         accumulate probability x V into out_acc on shared mesh
+        commit row_max and row_sum
 
-      normalize out_acc by row_sum
+      schedule scalar reciprocal/normalization/BF16 conversion over scalar_lanes
       write output tile
 
   done = true
@@ -86,6 +86,35 @@ behavior: |
 ## Implementation Notes
 
 ```yaml
+
+scalar_attention_region:
+  default_policy: area_first
+  scalar_lanes: 1
+  exp_lut_instances: 1
+  reciprocal_lut_instances: 1
+  output_convert_lanes: 1
+  schedule:
+    - compute per-row tile max from the score tile
+    - compute old_scale one row at a time
+    - rescale the old output accumulator one element at a time
+    - compute score_exp one score element at a time and accumulate row_sum
+    - run PV accumulation on the shared mesh using stored score_exp values
+    - normalize and convert one output element at a time before writeback
+  reason: keep QK/PV mesh throughput while avoiding per-score-lane LUTs,
+    reciprocal units, normalization multipliers, and BF16 converters
+
+area_policy:
+  default: area_first
+  must_not:
+    - duplicate the MAC mesh for attention
+    - instantiate per-score-lane exp LUTs by default
+    - instantiate per-row reciprocal LUTs by default
+    - instantiate per-output-lane BF16 converters by default
+  optional_parallelism_knobs:
+    - scalar_lanes
+    - exp_lut_instances
+    - output_convert_lanes
+
 q_k_loads:
   storage: SRAM-backed Q and K tile buffers, depth KT
   reader: shared beat-aware TileDmaReader

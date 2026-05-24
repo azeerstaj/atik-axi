@@ -61,11 +61,12 @@ for q0 in 0 .. q_rows step MR:
         if global_k > global_q:
           score = NEG_INF
 
-      update online softmax:
+      update online softmax using scalar_lanes:
         tile_max = row max of score_tile
         new_max = max(row_max, tile_max)
         old_scale = exp(row_max - new_max)
-        score_exp = exp(score_tile - new_max)
+        rescale out_acc one scheduled element at a time
+        score_exp = exp(score_tile - new_max), computed into local tile state
         new_sum = row_sum * old_scale + sum(score_exp)
 
       load V tile:
@@ -78,13 +79,30 @@ for q0 in 0 .. q_rows step MR:
       row_max = new_max
       row_sum = new_sum
 
-    normalize:
+    normalize using scalar_lanes:
       inv_sum = reciprocal(row_sum)
       O_fixed = out_acc * inv_sum
+      convert O_fixed to BF16 into the output tile buffer
 
-    convert O_fixed to BF16
     write O tile back to row-major memory
 ```
+
+
+## Area-First Scalar Scheduling
+
+The shared MAC mesh remains responsible for QK and PV work. Online-softmax
+bookkeeping is a scalar scheduled region by default:
+
+```text
+attention_scalar_lanes = 1
+exp_lut_instances = 1
+reciprocal_lut_instances = 1
+output_convert_lanes = 1
+```
+
+This trades extra cycles in softmax/update/normalization for a much smaller and
+more placeable controller. Wider scalar lanes are an implementation knob, not an
+ABI feature.
 
 ## Type Morphing
 

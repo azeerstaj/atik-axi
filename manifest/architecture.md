@@ -98,4 +98,8 @@ row sums are unsigned fixed-point
 probability x V accumulation is signed fixed-point
 ```
 
-Exponentiation and reciprocal may be lookup-table based.
+Exponentiation and reciprocal may be lookup-table based. The default attention
+implementation is area-first: QK and PV use the shared mesh, while online
+softmax, reciprocal normalization, and BF16 output conversion are scheduled over
+a small scalar region. The current default is one scalar lane; more scalar lanes
+are a hardware parameter for performance-oriented builds, not an ABI feature.
