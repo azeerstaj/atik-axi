@@ -7,7 +7,7 @@ case class AtikParams(
   meshCols: Int = 8,
   elemBits: Int = 16,
   fixedBits: Int = 24,
-  fixedFracBits: Int = 8,
+  fixedFracBits: Int = 11,
   accumBits: Int = 64,
   softmaxBits: Int = 32,
   softmaxFracBits: Int = 24,
@@ -26,12 +26,14 @@ case class AtikParams(
   require(elemBits == 16, "Atik external tensor elements are BF16")
   require(fixedBits > fixedFracBits, "fixed-point format needs integer bits")
   require(accumBits >= fixedBits * 2, "accumulator should hold fixed-point products")
+  require(accumBits > fixedFracBits * 2, "accumulator needs integer room above product fractional bits")
   require(memDataBits % elemBits == 0, "memory beat must contain an integer number of BF16 elements")
   require(memDataBits % xLen == 0, "memory beat must contain an integer number of xLen words")
   require(memDataBits == 64 || memDataBits == 128, "descriptor parser currently supports 64b or 128b beats")
   require(isPow2(expLutEntries), "exp LUT entries must be a power of two")
   require(isPow2(recipLutEntries), "reciprocal LUT entries must be a power of two")
 
+  val accumFracBits: Int = fixedFracBits * 2
   val bytesPerElem: Int = elemBits / 8
   val beatBytes: Int = memDataBits / 8
   val wordsPerBeat: Int = memDataBits / xLen

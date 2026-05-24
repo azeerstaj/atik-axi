@@ -9,9 +9,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define MAX_M 16
-#define MAX_N 16
-#define MAX_K 32
+#define MAX_M 32
+#define MAX_N 32
+#define MAX_K 128
 #define SAMPLE_COUNT 10
 
 static uint16_t mat_A[MAX_M * MAX_K] __attribute__((aligned(64)));
@@ -70,6 +70,58 @@ static const atik_matmul_case_t cases[] = {
         .seed = 4,
         .min_value = -0.5f,
         .max_value = 0.5f,
+        .tolerance_x10000 = 2500,
+    },
+    {
+        .name = "matmul_m16_n16_k64_rng",
+        .m = 16,
+        .n = 16,
+        .k = 64,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 4,
+        .min_value = -0.5f,
+        .max_value = 0.5f,
+        .tolerance_x10000 = 2500,
+    },
+    {
+        .name = "matmul_m16_n16_k128_rng",
+        .m = 16,
+        .n = 16,
+        .k = 128,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 4,
+        .min_value = -1.0f,
+        .max_value = 1.0f,
+        .tolerance_x10000 = 2500,
+    },
+    {
+        .name = "matmul_m32_n32_k64_rng",
+        .m = 32,
+        .n = 32,
+        .k = 64,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 4,
+        .min_value = -1.0f,
+        .max_value = 1.0f,
+        .tolerance_x10000 = 2500,
+    },
+    {
+        .name = "matmul_m32_n32_k128_rng",
+        .m = 32,
+        .n = 32,
+        .k = 128,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 4,
+        .min_value = -1.0f,
+        .max_value = 1.0f,
         .tolerance_x10000 = 2500,
     },
 };

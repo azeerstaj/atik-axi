@@ -56,35 +56,63 @@ class AtikCore(params: AtikParams) extends Module {
   descriptorReader.io.readCmd <> descriptorDma.io.cmd
   descriptorReader.io.readBeat <> descriptorDma.io.out
 
-  private val readOwnerDesc = 0.U(1.W)
-  private val readOwnerMatmul = 1.U(1.W)
+  private val readOwnerDesc = 0.U(2.W)
+  private val readOwnerMatmul = 1.U(2.W)
+  private val readOwnerAttention = 2.U(2.W)
   private val readOwner = RegInit(readOwnerDesc)
   private val descReadSelected = descriptorDma.io.memReq.valid
   private val matmulReadSelected = !descReadSelected && matmul.io.memReadReq.valid
+  private val attentionReadSelected = !descReadSelected && !matmulReadSelected && attention.io.memReadReq.valid
 
-  io.memReadReq.valid := descReadSelected || matmulReadSelected
-  io.memReadReq.bits := Mux(descReadSelected, descriptorDma.io.memReq.bits, matmul.io.memReadReq.bits)
+  io.memReadReq.valid := descReadSelected || matmulReadSelected || attentionReadSelected
+  io.memReadReq.bits := MuxCase(attention.io.memReadReq.bits, Seq(
+    descReadSelected -> descriptorDma.io.memReq.bits,
+    matmulReadSelected -> matmul.io.memReadReq.bits
+  ))
   descriptorDma.io.memReq.ready := descReadSelected && io.memReadReq.ready
   matmul.io.memReadReq.ready := matmulReadSelected && io.memReadReq.ready
+  attention.io.memReadReq.ready := attentionReadSelected && io.memReadReq.ready
 
   when(io.memReadReq.fire) {
-    readOwner := Mux(descReadSelected, readOwnerDesc, readOwnerMatmul)
+    readOwner := MuxCase(readOwnerAttention, Seq(
+      descReadSelected -> readOwnerDesc,
+      matmulReadSelected -> readOwnerMatmul
+    ))
   }
 
   descriptorDma.io.memResp.valid := io.memReadResp.valid && readOwner === readOwnerDesc
   descriptorDma.io.memResp.bits := io.memReadResp.bits
   matmul.io.memReadResp.valid := io.memReadResp.valid && readOwner === readOwnerMatmul
   matmul.io.memReadResp.bits := io.memReadResp.bits
-  io.memReadResp.ready := Mux(readOwner === readOwnerDesc, descriptorDma.io.memResp.ready, matmul.io.memReadResp.ready)
+  attention.io.memReadResp.valid := io.memReadResp.valid && readOwner === readOwnerAttention
+  attention.io.memReadResp.bits := io.memReadResp.bits
+  io.memReadResp.ready := MuxCase(attention.io.memReadResp.ready, Seq(
+    (readOwner === readOwnerDesc) -> descriptorDma.io.memResp.ready,
+    (readOwner === readOwnerMatmul) -> matmul.io.memReadResp.ready
+  ))
 
-  io.memWriteReq.valid := matmul.io.memWriteReq.valid
-  io.memWriteReq.bits := matmul.io.memWriteReq.bits
-  matmul.io.memWriteReq.ready := io.memWriteReq.ready
-  io.memWriteData := matmul.io.memWriteData
-  io.memWriteMask := matmul.io.memWriteMask
-  matmul.io.memWriteResp.valid := io.memWriteResp.valid
+  private val matmulWriteSelected = matmul.io.memWriteReq.valid
+  private val attentionWriteSelected = !matmulWriteSelected && attention.io.memWriteReq.valid
+  private val writeOwnerMatmul = 0.U(1.W)
+  private val writeOwnerAttention = 1.U(1.W)
+  private val writeOwner = RegInit(writeOwnerMatmul)
+
+  io.memWriteReq.valid := matmulWriteSelected || attentionWriteSelected
+  io.memWriteReq.bits := Mux(matmulWriteSelected, matmul.io.memWriteReq.bits, attention.io.memWriteReq.bits)
+  matmul.io.memWriteReq.ready := matmulWriteSelected && io.memWriteReq.ready
+  attention.io.memWriteReq.ready := attentionWriteSelected && io.memWriteReq.ready
+  io.memWriteData := Mux(matmulWriteSelected, matmul.io.memWriteData, attention.io.memWriteData)
+  io.memWriteMask := Mux(matmulWriteSelected, matmul.io.memWriteMask, attention.io.memWriteMask)
+
+  when(io.memWriteReq.fire) {
+    writeOwner := Mux(matmulWriteSelected, writeOwnerMatmul, writeOwnerAttention)
+  }
+
+  matmul.io.memWriteResp.valid := io.memWriteResp.valid && writeOwner === writeOwnerMatmul
   matmul.io.memWriteResp.bits := io.memWriteResp.bits
-  io.memWriteResp.ready := matmul.io.memWriteResp.ready
+  attention.io.memWriteResp.valid := io.memWriteResp.valid && writeOwner === writeOwnerAttention
+  attention.io.memWriteResp.bits := io.memWriteResp.bits
+  io.memWriteResp.ready := Mux(writeOwner === writeOwnerMatmul, matmul.io.memWriteResp.ready, attention.io.memWriteResp.ready)
 
   matmul.io.start := controller.io.matmulStart
   matmul.io.desc := controller.io.activeDesc

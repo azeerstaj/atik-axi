@@ -4,12 +4,13 @@ import atik._
 import chisel3._
 import chisel3.util._
 
-class FixedToBf16(params: AtikParams, inBits: Int) extends Module {
+class FixedToBf16(params: AtikParams, inBits: Int, fracBits: Int = -1) extends Module {
   val io = IO(new Bundle {
     val in = Input(SInt(inBits.W))
     val out = Output(UInt(params.elemBits.W))
   })
 
+  private val effectiveFracBits = if (fracBits >= 0) fracBits else params.fixedFracBits
   private val expBias = 127
   private val maxFiniteExp = 254
   private val mantissaBits = 7
@@ -23,7 +24,7 @@ class FixedToBf16(params: AtikParams, inBits: Int) extends Module {
 
   private val leadingZeros = PriorityEncoder(Reverse(magnitude))
   private val msbIdx = (inBits - 1).U - leadingZeros
-  private val unbiasedExp = msbIdx.zext - params.fixedFracBits.S((msbIdx.getWidth + 2).W)
+  private val unbiasedExp = msbIdx.zext - effectiveFracBits.S((msbIdx.getWidth + 2).W)
   private val biasedExp = unbiasedExp + expBias.S((msbIdx.getWidth + 3).W)
 
   private val rightShiftAmt = Wire(UInt(shiftWidth.W))

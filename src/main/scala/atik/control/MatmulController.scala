@@ -88,7 +88,7 @@ class MatmulController(params: AtikParams) extends Module {
     }
   }
 
-  private val outConverters = Seq.fill(params.meshRows, params.meshCols)(Module(new FixedToBf16(params, params.accumBits)))
+  private val outConverters = Seq.fill(params.meshRows, params.meshCols)(Module(new FixedToBf16(params, params.accumBits, params.accumFracBits)))
   private val outBf16 = Wire(Vec(params.meshRows, Vec(params.meshCols, UInt(params.elemBits.W))))
   for (r <- 0 until params.meshRows) {
     for (c <- 0 until params.meshCols) {

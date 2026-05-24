@@ -15,7 +15,6 @@ class MacCell(params: AtikParams) extends Module {
   private val product = FixedPointUtil.signedProductToAccum(
     io.a,
     io.b,
-    params.fixedFracBits,
     params.accumBits
   )
 

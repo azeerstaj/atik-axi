@@ -17,8 +17,8 @@ class OnlineSoftmax(params: AtikParams) extends Module {
   private val newMax = Mux(io.score > io.rowMax, io.score, io.rowMax)
   private val oldDelta = io.rowMax - newMax
   private val scoreDelta = io.score - newMax
-  private val oldExp = Module(new ExpLut(params))
-  private val scoreExp = Module(new ExpLut(params))
+  private val oldExp = Module(new ExpLut(params, params.accumFracBits))
+  private val scoreExp = Module(new ExpLut(params, params.accumFracBits))
   oldExp.io.in := oldDelta
   scoreExp.io.in := scoreDelta
 

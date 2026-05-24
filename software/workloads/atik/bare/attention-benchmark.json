@@ -1,0 +1,7 @@
+{
+  "name" : "attention-benchmark-bare",
+  "workdir" : "../../..",
+  "base" : "bare-base.json",
+  "host-init" : "workloads/atik/bare/attention-benchmark-host-init.sh",
+  "bin" : "build/attention_benchmark.riscv"
+}

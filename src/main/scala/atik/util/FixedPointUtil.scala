@@ -31,8 +31,7 @@ object FixedPointUtil {
 
   def narrowUInt(value: UInt, width: Int): UInt = resizeUInt(value, width)
 
-  def signedProductToAccum(a: SInt, b: SInt, fracBits: Int, accumBits: Int): SInt = {
-    val product = a * b
-    resizeSInt((product >> fracBits).asSInt, accumBits)
+  def signedProductToAccum(a: SInt, b: SInt, accumBits: Int): SInt = {
+    resizeSInt((a * b).asSInt, accumBits)
   }
 }
