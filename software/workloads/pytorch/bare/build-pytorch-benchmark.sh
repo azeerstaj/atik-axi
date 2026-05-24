@@ -37,6 +37,6 @@ esac
 echo "Generating ${GENERATE_LABEL}"
 "${GENERATE_CMD[@]}"
 
-echo "Building neutral PyTorch workload harness"
+echo "Building selected PyTorch workload harness"
 make clean
-make BUILD_MODE=baremetal build/pytorch_workload.riscv
+make BUILD_MODE=baremetal PYTORCH_WORKLOAD="${BENCHMARK}" build/pytorch_workload.riscv

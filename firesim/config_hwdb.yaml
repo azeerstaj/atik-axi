@@ -3,3 +3,8 @@ Atik8x8RoCC:
     deploy_quintuplet_override: null
     custom_runtime_config: null
 
+Atik4x4RoCC:
+    agfi: agfi-01cd96c69d2cae743
+    deploy_quintuplet_override: null
+    custom_runtime_config: null
+
