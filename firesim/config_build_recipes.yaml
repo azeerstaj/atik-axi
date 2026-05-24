@@ -1,0 +1,14 @@
+Atik2x2RoCC:
+  PLATFORM: f2
+  TARGET_PROJECT: firesim
+  TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+  DESIGN: FireSim
+  TARGET_CONFIG: WithDefaultFireSimBridges_WithFireSimConfigTweaks_chipyard.Atik2x2RoCCConfig
+  PLATFORM_CONFIG: BaseF2Config
+  deploy_quintuplet: null
+  platform_config_args:
+      fpga_frequency: 10 # Prototyping
+      build_strategy: TIMING
+  post_build_hook: null
+  metasim_customruntimeconfig: null
+  bit_builder_recipe: bit-builder-recipes/f2.yaml

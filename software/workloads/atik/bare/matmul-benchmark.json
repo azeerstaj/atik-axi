@@ -1,0 +1,7 @@
+{
+  "name" : "matmul-benchmark-bare",
+  "workdir" : "../../..",
+  "base" : "bare-base.json",
+  "host-init" : "workloads/atik/bare/matmul-benchmark-host-init.sh",
+  "bin" : "build/matmul_benchmark.riscv"
+}
