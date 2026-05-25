@@ -1,10 +1,16 @@
 Atik8x8RoCC:
-    agfi: agfi-06c073820831dac2c
+    agfi: agfi-001099324ad3ef9f9
     deploy_quintuplet_override: null
     custom_runtime_config: null
 
-Atik4x4RoCC:
-    agfi: agfi-01cd96c69d2cae743
-    deploy_quintuplet_override: null
-    custom_runtime_config: null
+# Non synthesizable
+#Atik8x8RoCC:
+# agfi: agfi-06c073820831dac2c
+# deploy_quintuplet_override: null
+# custom_runtime_config: null
+
+#Atik4x4RoCC:
+# agfi: agfi-01cd96c69d2cae743
+# deploy_quintuplet_override: null
+# custom_runtime_config: null
 
