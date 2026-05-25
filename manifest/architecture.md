@@ -98,8 +98,4 @@ row sums are unsigned fixed-point
 probability x V accumulation is signed fixed-point
 ```
 
-Exponentiation and reciprocal may be lookup-table based. The default attention
-implementation is area-first: QK and PV use the shared mesh, while online
-softmax, reciprocal normalization, and BF16 output conversion are scheduled over
-a small scalar region. The current default is one scalar lane; more scalar lanes
-are a hardware parameter for performance-oriented builds, not an ABI feature.
+Exponentiation and reciprocal may be lookup-table based. The default attention implementation is mesh-native for QK and PV: it processes a full MR x KC score tile, updates online softmax with a small scalar region, then folds probability x V through the shared mesh. Reciprocal normalization and BF16 output conversion are still scalar scheduled by default. The current default is one scalar lane; wider scalar lanes remain a performance-oriented hardware parameter, not an ABI feature.

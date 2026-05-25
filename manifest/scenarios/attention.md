@@ -90,10 +90,12 @@ for q0 in 0 .. q_rows step MR:
 
 ## Area-First Scalar Scheduling
 
-The shared MAC mesh remains responsible for QK and PV work. Online-softmax
-bookkeeping is a scalar scheduled region by default:
+The shared MAC mesh remains responsible for QK and PV work. The controller stores a local score_exp tile so PV can run as mesh outer-product steps instead of scalar probability x V multiplies. Online-softmax bookkeeping is a scalar scheduled region by default:
 
 ```text
+attention_rows = MR
+attention_kv_lanes = KC
+attention_value_lanes = NC
 attention_scalar_lanes = 1
 exp_lut_instances = 1
 reciprocal_lut_instances = 1

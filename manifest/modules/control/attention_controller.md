@@ -98,7 +98,7 @@ scalar_attention_region:
     - compute old_scale one row at a time
     - rescale the old output accumulator one element at a time
     - compute score_exp one score element at a time and accumulate row_sum
-    - run PV accumulation on the shared mesh using stored score_exp values
+    - run PV accumulation on the shared mesh using stored score_exp[MR][KC] values
     - normalize and convert one output element at a time before writeback
   reason: keep QK/PV mesh throughput while avoiding per-score-lane LUTs,
     reciprocal units, normalization multipliers, and BF16 converters
@@ -124,13 +124,14 @@ q_k_loads:
     one DMA command per feature element
 
 v_loads:
-  storage: local tile registers for first implementation
+  storage: local V[KC][NC] tile registers for first implementation
   reader: shared beat-aware TileDmaReader
-  reason: V is consumed once by the PV stage after online-softmax update
+  schedule: load the full V tile once per KV/value tile and reuse it for mesh PV
+  reason: avoid one DMA command per V row and keep PV aligned with the shared mesh
 
 output_write:
   writer: shared TileDmaWriter
-  schedule: write the normalized MR x NC output tile after online softmax state is
+  schedule: normalize and write the full MR x NC output tile after online softmax state is
     complete for the current query/value tile
   reason: share one packed row-major BF16 writeback implementation with matmul
 ```
