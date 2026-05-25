@@ -1,5 +1,9 @@
 # Scenario: Atik Matmul
 
+## Flow
+The user wants to launch a matmul kernel on the accelerator. First, s/he should *describe* the details of the operation, i.e matrix dimensions(lda, MNK ...) and pointers to the tensors. 
+That's why we have the [atik_desc_t](software/include/atik_types.h) struct. (same struct is used also for [attention](manifest/scenarios/attention.md))
+
 ## Goal
 
 ```text
