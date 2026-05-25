@@ -17,6 +17,8 @@
 #include "generated/gpt2_prefill_cases.h"
 #elif defined(PYTORCH_WORKLOAD_TINY_BERT)
 #include "generated/tiny_bert_cases.h"
+#elif defined(PYTORCH_WORKLOAD_VIT)
+#include "generated/vit_cases.h"
 #endif
 
 #define SAMPLE_COUNT 10
@@ -1009,13 +1011,295 @@ int main(void) {
 
 #include "generated/tiny_bert_cases.c"
 
+#elif defined(PYTORCH_WORKLOAD_VIT)
+typedef struct {
+  uint64_t patch_embed_cycles;
+  uint64_t ln_cycles;
+  uint64_t qkv_proj_cycles;
+  uint64_t attn_e2e_cycles;
+  uint64_t out_proj_cycles;
+  uint64_t mlp_fc1_cycles;
+  uint64_t gelu_cycles;
+  uint64_t mlp_fc2_cycles;
+  uint64_t classifier_cycles;
+  uint64_t residual_cycles;
+  uint64_t cpu_total_cycles;
+  uint64_t cpu_replaced_cycles;
+  uint64_t hw_replacement_cycles;
+  uint64_t raw_hw_rc;
+  int32_t hw_max_diff_x100000;
+  int hw_mismatches;
+} vit_stats_t;
+
+#define VIT_REPLAY_COLS   ((VIT_MAX_HIDDEN_DIM > VIT_MAX_D_MODEL) ? VIT_MAX_HIDDEN_DIM : VIT_MAX_D_MODEL)
+
+static uint16_t vit_patch_tokens[VIT_MAX_PATCH_COUNT * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_x[VIT_MAX_SEQ_LEN * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_ln[VIT_MAX_SEQ_LEN * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_q[VIT_MAX_SEQ_LEN * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_k[VIT_MAX_SEQ_LEN * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_v[VIT_MAX_SEQ_LEN * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_context[VIT_MAX_SEQ_LEN * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_attn_out[VIT_MAX_SEQ_LEN * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_hidden[VIT_MAX_SEQ_LEN * VIT_MAX_HIDDEN_DIM] __attribute__((aligned(64)));
+static uint16_t vit_act[VIT_MAX_SEQ_LEN * VIT_MAX_HIDDEN_DIM] __attribute__((aligned(64)));
+static uint16_t vit_ffn_out[VIT_MAX_SEQ_LEN * VIT_MAX_D_MODEL] __attribute__((aligned(64)));
+static uint16_t vit_logits[VIT_MAX_NUM_CLASSES] __attribute__((aligned(64)));
+static uint16_t vit_sw_logits[VIT_MAX_NUM_CLASSES] __attribute__((aligned(64)));
+static uint16_t vit_hw_replay[VIT_MAX_SEQ_LEN * VIT_REPLAY_COLS] __attribute__((aligned(64)));
+
+static const uint16_t *vit_layer_vec(const uint16_t *base, int layer, int d_model) { return base + layer * d_model; }
+static const uint16_t *vit_layer_hidden_vec(const uint16_t *base, int layer, int hidden_dim) { return base + layer * hidden_dim; }
+static const uint16_t *vit_layer_w_dxd(const uint16_t *base, int layer, int d_model) { return base + layer * d_model * d_model; }
+static const uint16_t *vit_layer_w_dxh(const uint16_t *base, int layer, int d_model, int hidden_dim) { return base + layer * d_model * hidden_dim; }
+static const uint16_t *vit_layer_w_hxd(const uint16_t *base, int layer, int hidden_dim, int d_model) { return base + layer * hidden_dim * d_model; }
+
+static void vit_add_position(const vit_case_t *tc) {
+  for (int c = 0; c < tc->d_model; c++) {
+    float v = atik_bf16_to_float(tc->cls_token[c]) + atik_bf16_to_float(tc->position_embeddings[c]);
+    vit_x[c] = atik_float_to_bf16(v);
+  }
+  for (int r = 0; r < tc->patch_count; r++) {
+    for (int c = 0; c < tc->d_model; c++) {
+      float v = atik_bf16_to_float(vit_patch_tokens[r * VIT_MAX_D_MODEL + c]) +
+                atik_bf16_to_float(tc->position_embeddings[(r + 1) * tc->d_model + c]);
+      vit_x[(r + 1) * VIT_MAX_D_MODEL + c] = atik_float_to_bf16(v);
+    }
+  }
+}
+
+static void vit_attention_heads_ref(const vit_case_t *tc, uint16_t *q, uint16_t *k, uint16_t *v, uint16_t *out) {
+  for (int h = 0; h < tc->n_heads; h++) {
+    int base = h * tc->head_dim;
+    atik_ref_attention_bf16(q + base, tc->seq_len, tc->head_dim, VIT_MAX_D_MODEL,
+                            k + base, tc->seq_len, VIT_MAX_D_MODEL,
+                            v + base, tc->head_dim, VIT_MAX_D_MODEL,
+                            tc->scale_bf16, out + base, VIT_MAX_D_MODEL, 0);
+  }
+}
+
+static void vit_attention_heads_profiled(const vit_case_t *tc, vit_stats_t *stats) {
+  for (int h = 0; h < tc->n_heads; h++) {
+    int base = h * tc->head_dim;
+    profile_attention_replay_bf16(
+        "vit.attn.head",
+        vit_q + base, tc->seq_len, tc->head_dim, VIT_MAX_D_MODEL,
+        vit_k + base, tc->seq_len, VIT_MAX_D_MODEL,
+        vit_v + base, tc->head_dim, VIT_MAX_D_MODEL,
+        tc->scale_bf16, vit_context + base, VIT_MAX_D_MODEL,
+        vit_hw_replay, tc->head_dim, 0, (int)tc->tolerance_x100000,
+        0, &stats->attn_e2e_cycles, &stats->cpu_total_cycles,
+        &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+        &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+  }
+}
+
+static void vit_forward_ref(const vit_case_t *tc, uint16_t *logits_out) {
+  linear_ref_bf16(tc->patches, tc->patch_count, tc->patch_dim, tc->patch_dim,
+                  tc->patch_w, tc->d_model, tc->patch_b, vit_patch_tokens, VIT_MAX_D_MODEL);
+  vit_add_position(tc);
+  for (int layer = 0; layer < tc->n_layers; layer++) {
+    layer_norm_bf16(vit_x, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                    vit_layer_vec(tc->ln1_gamma, layer, tc->d_model),
+                    vit_layer_vec(tc->ln1_beta, layer, tc->d_model), vit_ln, VIT_MAX_D_MODEL);
+    linear_ref_bf16(vit_ln, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL, vit_layer_w_dxd(tc->wq, layer, tc->d_model), tc->d_model, vit_layer_vec(tc->bq, layer, tc->d_model), vit_q, VIT_MAX_D_MODEL);
+    linear_ref_bf16(vit_ln, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL, vit_layer_w_dxd(tc->wk, layer, tc->d_model), tc->d_model, vit_layer_vec(tc->bk, layer, tc->d_model), vit_k, VIT_MAX_D_MODEL);
+    linear_ref_bf16(vit_ln, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL, vit_layer_w_dxd(tc->wv, layer, tc->d_model), tc->d_model, vit_layer_vec(tc->bv, layer, tc->d_model), vit_v, VIT_MAX_D_MODEL);
+    vit_attention_heads_ref(tc, vit_q, vit_k, vit_v, vit_context);
+    linear_ref_bf16(vit_context, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL, vit_layer_w_dxd(tc->wo, layer, tc->d_model), tc->d_model, vit_layer_vec(tc->bo, layer, tc->d_model), vit_attn_out, VIT_MAX_D_MODEL);
+    add_matrix_bf16(vit_x, VIT_MAX_D_MODEL, vit_attn_out, VIT_MAX_D_MODEL, vit_x, VIT_MAX_D_MODEL, tc->seq_len, tc->d_model);
+    layer_norm_bf16(vit_x, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                    vit_layer_vec(tc->ln2_gamma, layer, tc->d_model),
+                    vit_layer_vec(tc->ln2_beta, layer, tc->d_model), vit_ln, VIT_MAX_D_MODEL);
+    linear_ref_bf16(vit_ln, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL, vit_layer_w_dxh(tc->w1, layer, tc->d_model, tc->hidden_dim), tc->hidden_dim, vit_layer_hidden_vec(tc->b1, layer, tc->hidden_dim), vit_hidden, VIT_MAX_HIDDEN_DIM);
+    gelu_bf16(vit_hidden, vit_act, tc->seq_len, tc->hidden_dim, VIT_MAX_HIDDEN_DIM, VIT_MAX_HIDDEN_DIM);
+    linear_ref_bf16(vit_act, tc->seq_len, tc->hidden_dim, VIT_MAX_HIDDEN_DIM, vit_layer_w_hxd(tc->w2, layer, tc->hidden_dim, tc->d_model), tc->d_model, vit_layer_vec(tc->b2, layer, tc->d_model), vit_ffn_out, VIT_MAX_D_MODEL);
+    add_matrix_bf16(vit_x, VIT_MAX_D_MODEL, vit_ffn_out, VIT_MAX_D_MODEL, vit_x, VIT_MAX_D_MODEL, tc->seq_len, tc->d_model);
+  }
+  layer_norm_bf16(vit_x, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                  tc->final_ln_gamma, tc->final_ln_beta, vit_ln, VIT_MAX_D_MODEL);
+  linear_ref_bf16(vit_ln, 1, tc->d_model, VIT_MAX_D_MODEL, tc->classifier_w, tc->num_classes,
+                  tc->classifier_b, logits_out, tc->num_classes);
+}
+
+static void vit_forward_profiled(const vit_case_t *tc, vit_stats_t *stats, uint16_t *logits_out) {
+  memset(stats, 0, sizeof(*stats));
+  stats->raw_hw_rc = ATIK_OK;
+  atik_clear_counters();
+  ATIK_PROGRESS("[case] begin vit %s seq=%d patch_dim=%d d=%d layers=%d", tc->name, tc->seq_len, tc->patch_dim, tc->d_model, tc->n_layers);
+
+  profile_linear_replay_bf16("vit.patch", tc->patches, tc->patch_count, tc->patch_dim, tc->patch_dim,
+                             tc->patch_w, tc->d_model, tc->patch_b, vit_patch_tokens, VIT_MAX_D_MODEL,
+                             vit_hw_replay, VIT_MAX_D_MODEL, (int)tc->tolerance_x100000,
+                             0, &stats->patch_embed_cycles, &stats->cpu_total_cycles,
+                             &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+                             &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+
+  uint64_t start = atik_bench_read_cycles();
+  vit_add_position(tc);
+  account_cpu_cycles(atik_bench_read_cycles() - start, &stats->residual_cycles, &stats->cpu_total_cycles);
+  ATIK_PROGRESS("[cpu] finished vit.cls_position");
+
+  for (int layer = 0; layer < tc->n_layers; layer++) {
+    ATIK_PROGRESS("[layer] begin vit layer=%d", layer);
+    start = atik_bench_read_cycles();
+    layer_norm_bf16(vit_x, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                    vit_layer_vec(tc->ln1_gamma, layer, tc->d_model),
+                    vit_layer_vec(tc->ln1_beta, layer, tc->d_model), vit_ln, VIT_MAX_D_MODEL);
+    account_cpu_cycles(atik_bench_read_cycles() - start, &stats->ln_cycles, &stats->cpu_total_cycles);
+    ATIK_PROGRESS("[cpu] finished vit.ln1 layer=%d", layer);
+
+    profile_linear_replay_bf16("vit.q", vit_ln, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                               vit_layer_w_dxd(tc->wq, layer, tc->d_model), tc->d_model,
+                               vit_layer_vec(tc->bq, layer, tc->d_model), vit_q, VIT_MAX_D_MODEL,
+                               vit_hw_replay, VIT_MAX_D_MODEL, (int)tc->tolerance_x100000,
+                               0, &stats->qkv_proj_cycles, &stats->cpu_total_cycles,
+                               &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+                               &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+    profile_linear_replay_bf16("vit.k", vit_ln, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                               vit_layer_w_dxd(tc->wk, layer, tc->d_model), tc->d_model,
+                               vit_layer_vec(tc->bk, layer, tc->d_model), vit_k, VIT_MAX_D_MODEL,
+                               vit_hw_replay, VIT_MAX_D_MODEL, (int)tc->tolerance_x100000,
+                               0, &stats->qkv_proj_cycles, &stats->cpu_total_cycles,
+                               &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+                               &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+    profile_linear_replay_bf16("vit.v", vit_ln, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                               vit_layer_w_dxd(tc->wv, layer, tc->d_model), tc->d_model,
+                               vit_layer_vec(tc->bv, layer, tc->d_model), vit_v, VIT_MAX_D_MODEL,
+                               vit_hw_replay, VIT_MAX_D_MODEL, (int)tc->tolerance_x100000,
+                               0, &stats->qkv_proj_cycles, &stats->cpu_total_cycles,
+                               &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+                               &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+
+    vit_attention_heads_profiled(tc, stats);
+
+    profile_linear_replay_bf16("vit.out", vit_context, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                               vit_layer_w_dxd(tc->wo, layer, tc->d_model), tc->d_model,
+                               vit_layer_vec(tc->bo, layer, tc->d_model), vit_attn_out, VIT_MAX_D_MODEL,
+                               vit_hw_replay, VIT_MAX_D_MODEL, (int)tc->tolerance_x100000,
+                               0, &stats->out_proj_cycles, &stats->cpu_total_cycles,
+                               &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+                               &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+
+    start = atik_bench_read_cycles();
+    add_matrix_bf16(vit_x, VIT_MAX_D_MODEL, vit_attn_out, VIT_MAX_D_MODEL,
+                    vit_x, VIT_MAX_D_MODEL, tc->seq_len, tc->d_model);
+    account_cpu_cycles(atik_bench_read_cycles() - start, &stats->residual_cycles, &stats->cpu_total_cycles);
+    ATIK_PROGRESS("[cpu] finished vit.attn_residual layer=%d", layer);
+
+    start = atik_bench_read_cycles();
+    layer_norm_bf16(vit_x, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                    vit_layer_vec(tc->ln2_gamma, layer, tc->d_model),
+                    vit_layer_vec(tc->ln2_beta, layer, tc->d_model), vit_ln, VIT_MAX_D_MODEL);
+    account_cpu_cycles(atik_bench_read_cycles() - start, &stats->ln_cycles, &stats->cpu_total_cycles);
+    ATIK_PROGRESS("[cpu] finished vit.ln2 layer=%d", layer);
+
+    profile_linear_replay_bf16("vit.fc1", vit_ln, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                               vit_layer_w_dxh(tc->w1, layer, tc->d_model, tc->hidden_dim), tc->hidden_dim,
+                               vit_layer_hidden_vec(tc->b1, layer, tc->hidden_dim), vit_hidden, VIT_MAX_HIDDEN_DIM,
+                               vit_hw_replay, VIT_MAX_HIDDEN_DIM, (int)tc->tolerance_x100000,
+                               0, &stats->mlp_fc1_cycles, &stats->cpu_total_cycles,
+                               &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+                               &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+
+    start = atik_bench_read_cycles();
+    gelu_bf16(vit_hidden, vit_act, tc->seq_len, tc->hidden_dim, VIT_MAX_HIDDEN_DIM, VIT_MAX_HIDDEN_DIM);
+    account_cpu_cycles(atik_bench_read_cycles() - start, &stats->gelu_cycles, &stats->cpu_total_cycles);
+    ATIK_PROGRESS("[cpu] finished vit.gelu layer=%d", layer);
+
+    profile_linear_replay_bf16("vit.fc2", vit_act, tc->seq_len, tc->hidden_dim, VIT_MAX_HIDDEN_DIM,
+                               vit_layer_w_hxd(tc->w2, layer, tc->hidden_dim, tc->d_model), tc->d_model,
+                               vit_layer_vec(tc->b2, layer, tc->d_model), vit_ffn_out, VIT_MAX_D_MODEL,
+                               vit_hw_replay, VIT_MAX_D_MODEL, (int)tc->tolerance_x100000,
+                               0, &stats->mlp_fc2_cycles, &stats->cpu_total_cycles,
+                               &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+                               &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+
+    start = atik_bench_read_cycles();
+    add_matrix_bf16(vit_x, VIT_MAX_D_MODEL, vit_ffn_out, VIT_MAX_D_MODEL,
+                    vit_x, VIT_MAX_D_MODEL, tc->seq_len, tc->d_model);
+    account_cpu_cycles(atik_bench_read_cycles() - start, &stats->residual_cycles, &stats->cpu_total_cycles);
+    ATIK_PROGRESS("[cpu] finished vit.ffn_residual layer=%d", layer);
+    ATIK_PROGRESS("[layer] finished vit layer=%d", layer);
+  }
+
+  start = atik_bench_read_cycles();
+  layer_norm_bf16(vit_x, tc->seq_len, tc->d_model, VIT_MAX_D_MODEL,
+                  tc->final_ln_gamma, tc->final_ln_beta, vit_ln, VIT_MAX_D_MODEL);
+  account_cpu_cycles(atik_bench_read_cycles() - start, &stats->ln_cycles, &stats->cpu_total_cycles);
+  ATIK_PROGRESS("[cpu] finished vit.final_ln");
+
+  profile_linear_replay_bf16("vit.classifier", vit_ln, 1, tc->d_model, VIT_MAX_D_MODEL,
+                             tc->classifier_w, tc->num_classes, tc->classifier_b, logits_out, tc->num_classes,
+                             vit_hw_replay, tc->num_classes, (int)tc->tolerance_x100000,
+                             0, &stats->classifier_cycles, &stats->cpu_total_cycles,
+                             &stats->cpu_replaced_cycles, &stats->hw_replacement_cycles,
+                             &stats->hw_max_diff_x100000, &stats->hw_mismatches, &stats->raw_hw_rc);
+  ATIK_PROGRESS("[case] finished vit %s", tc->name);
+}
+
+static uint64_t run_vit_case(int case_index, const vit_case_t *tc) {
+  char shape[128];
+  int32_t hw_max_diff = 0, cpu_max_diff = 0;
+  int32_t sw_sample[SAMPLE_COUNT], hw_sample[SAMPLE_COUNT], diff_sample[SAMPLE_COUNT];
+  snprintf(shape, sizeof(shape), "seq=%d patches=%d patch_dim=%d d_model=%d heads=%d head_dim=%d hidden=%d layers=%d classes=%d",
+           tc->seq_len, tc->patch_count, tc->patch_dim, tc->d_model, tc->n_heads, tc->head_dim, tc->hidden_dim, tc->n_layers, tc->num_classes);
+  vit_stats_t stats;
+  vit_forward_profiled(tc, &stats, vit_sw_logits);
+  uint64_t cpu_cycles = stats.cpu_total_cycles;
+  int cpu_mismatches = compare_bf16_x100000(tc->expected_logits, vit_sw_logits, 1, tc->num_classes,
+                                            tc->num_classes, tc->num_classes,
+                                            (int)tc->tolerance_x100000, &cpu_max_diff);
+  memcpy(vit_logits, vit_sw_logits, sizeof(uint16_t) * (size_t)tc->num_classes);
+  hw_max_diff = stats.hw_max_diff_x100000;
+  int hw_rc = (int)stats.raw_hw_rc;
+  int mismatches = cpu_mismatches + stats.hw_mismatches;
+  int sample_count = tc->num_classes < SAMPLE_COUNT ? tc->num_classes : SAMPLE_COUNT;
+  sample_bf16_flat(tc->expected_logits, vit_logits, 1, tc->num_classes, tc->num_classes, tc->num_classes, 0, sample_count, sw_sample, hw_sample, diff_sample);
+  uint64_t hw_cycles = hybrid_cycles(stats.cpu_total_cycles, stats.cpu_replaced_cycles, stats.hw_replacement_cycles);
+  const atik_log_stage_t stages[] = {
+      {"patch_embed", stats.patch_embed_cycles}, {"ln", stats.ln_cycles},
+      {"qkv", stats.qkv_proj_cycles}, {"attn", stats.attn_e2e_cycles},
+      {"out", stats.out_proj_cycles}, {"fc1", stats.mlp_fc1_cycles},
+      {"gelu", stats.gelu_cycles}, {"fc2", stats.mlp_fc2_cycles},
+      {"classifier", stats.classifier_cycles}, {"residual", stats.residual_cycles},
+      {"cpu_replaced", stats.cpu_replaced_cycles}, {"hw_replacement", stats.hw_replacement_cycles},
+      {"atik_total", atik_read_counter(ATIK_COUNTER_TOTAL_CYCLES)},
+  };
+  const char *status = (hw_rc == ATIK_OK && mismatches == 0) ? "PASS" : "FAIL";
+  const atik_log_result_t result = {
+      .workload = "vit", .case_index = case_index, .name = tc->name, .shape = shape,
+      .mode = "attention+matmul", .status = status, .hw_rc = (uint64_t)hw_rc, .raw_hw_rc = stats.raw_hw_rc,
+      .mismatches = (uint64_t)mismatches, .cpu_cycles = cpu_cycles, .hw_cycles = hw_cycles,
+      .stages = stages, .stage_count = (int)(sizeof(stages) / sizeof(stages[0])),
+      .hw_max_abs_diff_x100000 = hw_max_diff, .cpu_ref_max_abs_diff_x100000 = cpu_max_diff,
+  };
+  const atik_log_sample_t sample = {
+      .workload = "vit", .case_index = case_index, .name = tc->name, .tensor = "logits",
+      .start = 0, .count = sample_count, .total = tc->num_classes, .hw_rc = (uint64_t)hw_rc,
+      .sw_x10000 = sw_sample, .hw_x10000 = hw_sample, .diff_x10000 = diff_sample,
+  };
+  atik_log_result_human(&result);
+  atik_log_sample(&sample);
+  atik_log_result_json(&result);
+  return (hw_rc == ATIK_OK && mismatches == 0) ? 0u : 1u;
+}
+
+int main(void) {
+  uint64_t failures = 0;
+  for (int i = 0; i < vit_case_count; i++) failures += run_vit_case(i, &vit_cases[i]);
+  return failures == 0 ? 0 : 1;
+}
+
+#include "generated/vit_cases.c"
+
 #else
 int main(void) {
   const atik_log_result_t result = {
       .workload = "pytorch-workload",
       .case_index = 0,
       .name = "missing-workload-selection",
-      .shape = "set PYTORCH_WORKLOAD=attention-operator|gpt2-prefill|tiny-bert",
+      .shape = "set PYTORCH_WORKLOAD=attention-operator|gpt2-prefill|tiny-bert|vit",
       .mode = "none",
       .status = "FAIL",
       .hw_rc = ATIK_ERR_BAD_DIMS,

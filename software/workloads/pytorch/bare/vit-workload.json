@@ -1,0 +1,7 @@
+{
+  "name" : "vit-workload-bare",
+  "workdir" : "../../..",
+  "base" : "bare-base.json",
+  "host-init" : "workloads/pytorch/bare/vit-workload-host-init.sh",
+  "bin" : "build/pytorch_workload.riscv"
+}
