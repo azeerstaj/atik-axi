@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
-  echo "usage: $0 <attention-operator|tiny-bert|gpt2-prefill>" >&2
+  echo "usage: $0 <attention-operator|tiny-bert|gpt2-prefill|vit>" >&2
   exit 2
 fi
 
@@ -27,6 +27,10 @@ case "${BENCHMARK}" in
   gpt2-prefill)
     GENERATE_LABEL="PyTorch GPT-2 prefill cases"
     GENERATE_CMD=("${PYTHON_BIN}" scripts/export_gpt2_prefill_cases.py)
+    ;;
+  vit)
+    GENERATE_LABEL="PyTorch ViT inference cases"
+    GENERATE_CMD=("${PYTHON_BIN}" scripts/export_vit_cases.py)
     ;;
   *)
     echo "unknown benchmark '${BENCHMARK}'" >&2
