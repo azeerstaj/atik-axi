@@ -1,8 +1,19 @@
 # Scenario: Atik Matmul
 
 ## Flow
-The user wants to launch a matmul kernel on the accelerator. First, s/he should *describe* the details of the operation, i.e matrix dimensions(lda, MNK ...) and pointers to the tensors. 
-That's why we have the [atik_desc_t](software/include/atik_types.h) struct. (same struct is used also for [attention](manifest/scenarios/attention.md))
+To launch a matmul kernel on Atik, the user first describes the operation: matrix dimensions, leading dimensions, and tensor pointers.
+For that, we use the [atik_desc_t](../../software/include/atik_types.h) struct, which is the same struct used for [attention](./attention.md).
+The user allocates the struct, fills in the relevant fields, and leaves unrelated parameters untouched. Calling [atik_rocc_set_desc()](../../software/include/atik_rocc.h) with a pointer to that struct emits the RoCC instruction that gives Atik the descriptor address.
+
+After Atik has been configured with the chosen `atik_desc_t`, the user triggers execution by calling [atik_rocc_run()](../../software/include/atik_rocc.h), which emits the corresponding RoCC instruction. After that, the user waits until Atik finishes the work.
+
+On the hardware side, the command bits arrive at the RoCC `io.cmd` interface. That interface connects to [AtikCommandRouter](../../src/main/scala/atik/rocc/AtikCommandRouter.scala), which decodes Atik instructions and generates internal control signals such as `setDesc` and `run`.
+
+For the descriptor setup phase, the router raises `setDesc` and forwards the descriptor pointer through `descAddr`. [AtikTop](../../src/main/scala/atik/top/AtikTop.scala) simply passes those signals through to [AtikController](../../src/main/scala/atik/control/AtikController.scala). The controller stores the descriptor address and later starts [DescriptorReader](../../src/main/scala/atik/control/DescriptorReader.scala) when it sees `run`.
+
+`DescriptorReader` then asks [DmaReader](../../src/main/scala/atik/memory/DmaReader.scala), which is wired as `descriptorDma` in [AtikCore](../../src/main/scala/atik/top/AtikCore.scala), to read `params.descriptorBeats` beats starting at the stored descriptor address. Once the beats are returned and parsed into `io.desc`, the reader raises `done`. At that point, `AtikController` inspects the descriptor, sees that the operation is matmul, and moves from `sReadDesc` to the matmul launch path.
+
+
 
 ## Goal
 
