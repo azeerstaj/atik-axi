@@ -35,6 +35,8 @@ class AtikCore(params: AtikParams) extends Module {
   private val controller = Module(new AtikController(params))
   private val matmul = Module(new MatmulController(params))
   private val attentionOpt = if (params.enableAttention) Some(Module(new AttentionController(params))) else None
+  private val sharedTileReader = Module(new TileDmaReader(params))
+  private val sharedTileWriter = Module(new TileDmaWriter(params, params.meshRows, params.meshCols))
   private val sharedMesh = Module(new MacMesh(params))
   private val counters = Module(new CounterBank(params))
   private val statusRegs = Module(new StatusRegs(params))
@@ -63,93 +65,112 @@ class AtikCore(params: AtikParams) extends Module {
   descriptorReader.io.readCmd <> descriptorDma.io.cmd
   descriptorReader.io.readBeat <> descriptorDma.io.out
 
-  private val readOwnerDesc = 0.U(2.W)
-  private val readOwnerMatmul = 1.U(2.W)
-  private val readOwnerAttention = 2.U(2.W)
+  private val readOwnerDesc = 0.U(1.W)
+  private val readOwnerTile = 1.U(1.W)
   private val readOwner = RegInit(readOwnerDesc)
-  private val attentionReadValid = WireDefault(false.B)
-  private val attentionReadBits = WireDefault(0.U.asTypeOf(new DmaBeatRequest(params)))
+
+  private val attentionTileReadValid = WireDefault(false.B)
+  private val attentionTileReadBits = WireDefault(0.U.asTypeOf(new TileDmaReadCommand(params)))
   attentionOpt.foreach { attention =>
-    attentionReadValid := attention.io.memReadReq.valid
-    attentionReadBits := attention.io.memReadReq.bits
+    attentionTileReadValid := attention.io.tileReadCmd.valid
+    attentionTileReadBits := attention.io.tileReadCmd.bits
+  }
+
+  private val matmulTileReadSelected = matmul.io.tileReadCmd.valid
+  private val attentionTileReadSelected = !matmulTileReadSelected && attentionTileReadValid
+  sharedTileReader.io.cmd.valid := matmulTileReadSelected || attentionTileReadSelected
+  sharedTileReader.io.cmd.bits := Mux(matmulTileReadSelected, matmul.io.tileReadCmd.bits, attentionTileReadBits)
+  matmul.io.tileReadCmd.ready := matmulTileReadSelected && sharedTileReader.io.cmd.ready
+  attentionOpt.foreach { attention =>
+    attention.io.tileReadCmd.ready := attentionTileReadSelected && sharedTileReader.io.cmd.ready
+  }
+
+  private val tileReadOwnerMatmul = 0.U(1.W)
+  private val tileReadOwnerAttention = 1.U(1.W)
+  private val tileReadOwner = RegInit(tileReadOwnerMatmul)
+  when(sharedTileReader.io.cmd.fire) {
+    tileReadOwner := Mux(matmulTileReadSelected, tileReadOwnerMatmul, tileReadOwnerAttention)
+  }
+
+  matmul.io.tileReadOut.valid := sharedTileReader.io.out.valid && tileReadOwner === tileReadOwnerMatmul
+  matmul.io.tileReadOut.bits := sharedTileReader.io.out.bits
+  private val attentionTileReadReady = WireDefault(false.B)
+  attentionOpt.foreach { attention =>
+    attention.io.tileReadOut.valid := sharedTileReader.io.out.valid && tileReadOwner === tileReadOwnerAttention
+    attention.io.tileReadOut.bits := sharedTileReader.io.out.bits
+    attentionTileReadReady := attention.io.tileReadOut.ready
+  }
+  sharedTileReader.io.out.ready := Mux(tileReadOwner === tileReadOwnerMatmul, matmul.io.tileReadOut.ready, attentionTileReadReady)
+
+  matmul.io.tileReadActive := sharedTileReader.io.active && tileReadOwner === tileReadOwnerMatmul
+  matmul.io.tileReadBytes := Mux(tileReadOwner === tileReadOwnerMatmul, sharedTileReader.io.bytesRead, 0.U)
+  attentionOpt.foreach { attention =>
+    attention.io.tileReadActive := sharedTileReader.io.active && tileReadOwner === tileReadOwnerAttention
+    attention.io.tileReadBytes := Mux(tileReadOwner === tileReadOwnerAttention, sharedTileReader.io.bytesRead, 0.U)
+  }
+
+  private val attentionTileWriteValid = WireDefault(false.B)
+  private val attentionTileWriteBits = WireDefault(0.U.asTypeOf(new TileDmaWriteCommand(params)))
+  private val attentionTileWriteTile = WireDefault(0.U.asTypeOf(Vec(params.meshRows, Vec(params.meshCols, UInt(params.elemBits.W)))))
+  attentionOpt.foreach { attention =>
+    attentionTileWriteValid := attention.io.tileWriteCmd.valid
+    attentionTileWriteBits := attention.io.tileWriteCmd.bits
+    attentionTileWriteTile := attention.io.tileWriteTile
+  }
+
+  private val matmulTileWriteSelected = matmul.io.tileWriteCmd.valid
+  private val attentionTileWriteSelected = !matmulTileWriteSelected && attentionTileWriteValid
+  sharedTileWriter.io.cmd.valid := matmulTileWriteSelected || attentionTileWriteSelected
+  sharedTileWriter.io.cmd.bits := Mux(matmulTileWriteSelected, matmul.io.tileWriteCmd.bits, attentionTileWriteBits)
+  matmul.io.tileWriteCmd.ready := matmulTileWriteSelected && sharedTileWriter.io.cmd.ready
+  attentionOpt.foreach { attention =>
+    attention.io.tileWriteCmd.ready := attentionTileWriteSelected && sharedTileWriter.io.cmd.ready
+  }
+
+  private val tileWriteOwnerMatmul = 0.U(1.W)
+  private val tileWriteOwnerAttention = 1.U(1.W)
+  private val tileWriteOwner = RegInit(tileWriteOwnerMatmul)
+  when(sharedTileWriter.io.cmd.fire) {
+    tileWriteOwner := Mux(matmulTileWriteSelected, tileWriteOwnerMatmul, tileWriteOwnerAttention)
+  }
+  sharedTileWriter.io.tile := Mux(tileWriteOwner === tileWriteOwnerMatmul, matmul.io.tileWriteTile, attentionTileWriteTile)
+
+  matmul.io.tileWriteDone := sharedTileWriter.io.done && tileWriteOwner === tileWriteOwnerMatmul
+  matmul.io.tileWriteError := sharedTileWriter.io.error && tileWriteOwner === tileWriteOwnerMatmul
+  matmul.io.tileWriteActive := sharedTileWriter.io.active && tileWriteOwner === tileWriteOwnerMatmul
+  matmul.io.tileWriteBytes := Mux(tileWriteOwner === tileWriteOwnerMatmul, sharedTileWriter.io.bytesWritten, 0.U)
+  attentionOpt.foreach { attention =>
+    attention.io.tileWriteDone := sharedTileWriter.io.done && tileWriteOwner === tileWriteOwnerAttention
+    attention.io.tileWriteError := sharedTileWriter.io.error && tileWriteOwner === tileWriteOwnerAttention
+    attention.io.tileWriteActive := sharedTileWriter.io.active && tileWriteOwner === tileWriteOwnerAttention
+    attention.io.tileWriteBytes := Mux(tileWriteOwner === tileWriteOwnerAttention, sharedTileWriter.io.bytesWritten, 0.U)
   }
 
   private val descReadSelected = descriptorDma.io.memReq.valid
-  private val matmulReadSelected = !descReadSelected && matmul.io.memReadReq.valid
-  private val attentionReadSelected = !descReadSelected && !matmulReadSelected && attentionReadValid
-
-  io.memReadReq.valid := descReadSelected || matmulReadSelected || attentionReadSelected
-  io.memReadReq.bits := MuxCase(attentionReadBits, Seq(
-    descReadSelected -> descriptorDma.io.memReq.bits,
-    matmulReadSelected -> matmul.io.memReadReq.bits
-  ))
+  private val tileReadSelected = !descReadSelected && sharedTileReader.io.memReq.valid
+  io.memReadReq.valid := descReadSelected || tileReadSelected
+  io.memReadReq.bits := Mux(descReadSelected, descriptorDma.io.memReq.bits, sharedTileReader.io.memReq.bits)
   descriptorDma.io.memReq.ready := descReadSelected && io.memReadReq.ready
-  matmul.io.memReadReq.ready := matmulReadSelected && io.memReadReq.ready
-  attentionOpt.foreach { attention =>
-    attention.io.memReadReq.ready := attentionReadSelected && io.memReadReq.ready
-  }
+  sharedTileReader.io.memReq.ready := tileReadSelected && io.memReadReq.ready
 
   when(io.memReadReq.fire) {
-    readOwner := MuxCase(readOwnerAttention, Seq(
-      descReadSelected -> readOwnerDesc,
-      matmulReadSelected -> readOwnerMatmul
-    ))
+    readOwner := Mux(descReadSelected, readOwnerDesc, readOwnerTile)
   }
 
   descriptorDma.io.memResp.valid := io.memReadResp.valid && readOwner === readOwnerDesc
   descriptorDma.io.memResp.bits := io.memReadResp.bits
-  matmul.io.memReadResp.valid := io.memReadResp.valid && readOwner === readOwnerMatmul
-  matmul.io.memReadResp.bits := io.memReadResp.bits
-  private val attentionReadRespReady = WireDefault(false.B)
-  attentionOpt.foreach { attention =>
-    attention.io.memReadResp.valid := io.memReadResp.valid && readOwner === readOwnerAttention
-    attention.io.memReadResp.bits := io.memReadResp.bits
-    attentionReadRespReady := attention.io.memReadResp.ready
-  }
-  io.memReadResp.ready := MuxCase(attentionReadRespReady, Seq(
-    (readOwner === readOwnerDesc) -> descriptorDma.io.memResp.ready,
-    (readOwner === readOwnerMatmul) -> matmul.io.memReadResp.ready
-  ))
+  sharedTileReader.io.memResp.valid := io.memReadResp.valid && readOwner === readOwnerTile
+  sharedTileReader.io.memResp.bits := io.memReadResp.bits
+  io.memReadResp.ready := Mux(readOwner === readOwnerDesc, descriptorDma.io.memResp.ready, sharedTileReader.io.memResp.ready)
 
-  private val attentionWriteValid = WireDefault(false.B)
-  private val attentionWriteBits = WireDefault(0.U.asTypeOf(new DmaBeatRequest(params)))
-  private val attentionWriteData = WireDefault(0.U(params.memDataBits.W))
-  private val attentionWriteMask = WireDefault(0.U((params.memDataBits / 8).W))
-  attentionOpt.foreach { attention =>
-    attentionWriteValid := attention.io.memWriteReq.valid
-    attentionWriteBits := attention.io.memWriteReq.bits
-    attentionWriteData := attention.io.memWriteData
-    attentionWriteMask := attention.io.memWriteMask
-  }
-
-  private val matmulWriteSelected = matmul.io.memWriteReq.valid
-  private val attentionWriteSelected = !matmulWriteSelected && attentionWriteValid
-  private val writeOwnerMatmul = 0.U(1.W)
-  private val writeOwnerAttention = 1.U(1.W)
-  private val writeOwner = RegInit(writeOwnerMatmul)
-
-  io.memWriteReq.valid := matmulWriteSelected || attentionWriteSelected
-  io.memWriteReq.bits := Mux(matmulWriteSelected, matmul.io.memWriteReq.bits, attentionWriteBits)
-  matmul.io.memWriteReq.ready := matmulWriteSelected && io.memWriteReq.ready
-  attentionOpt.foreach { attention =>
-    attention.io.memWriteReq.ready := attentionWriteSelected && io.memWriteReq.ready
-  }
-  io.memWriteData := Mux(matmulWriteSelected, matmul.io.memWriteData, attentionWriteData)
-  io.memWriteMask := Mux(matmulWriteSelected, matmul.io.memWriteMask, attentionWriteMask)
-
-  when(io.memWriteReq.fire) {
-    writeOwner := Mux(matmulWriteSelected, writeOwnerMatmul, writeOwnerAttention)
-  }
-
-  matmul.io.memWriteResp.valid := io.memWriteResp.valid && writeOwner === writeOwnerMatmul
-  matmul.io.memWriteResp.bits := io.memWriteResp.bits
-  private val attentionWriteRespReady = WireDefault(false.B)
-  attentionOpt.foreach { attention =>
-    attention.io.memWriteResp.valid := io.memWriteResp.valid && writeOwner === writeOwnerAttention
-    attention.io.memWriteResp.bits := io.memWriteResp.bits
-    attentionWriteRespReady := attention.io.memWriteResp.ready
-  }
-  io.memWriteResp.ready := Mux(writeOwner === writeOwnerMatmul, matmul.io.memWriteResp.ready, attentionWriteRespReady)
+  io.memWriteReq.valid := sharedTileWriter.io.memReq.valid
+  io.memWriteReq.bits := sharedTileWriter.io.memReq.bits
+  sharedTileWriter.io.memReq.ready := io.memWriteReq.ready
+  io.memWriteData := sharedTileWriter.io.memData
+  io.memWriteMask := sharedTileWriter.io.memMask
+  sharedTileWriter.io.memResp.valid := io.memWriteResp.valid
+  sharedTileWriter.io.memResp.bits := io.memWriteResp.bits
+  io.memWriteResp.ready := sharedTileWriter.io.memResp.ready
 
   matmul.io.start := controller.io.matmulStart
   matmul.io.desc := controller.io.activeDesc
