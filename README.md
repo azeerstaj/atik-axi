@@ -1,6 +1,6 @@
 ![image](docs/static/banner.png)
 ## TL;DR
-**Atik** is an open-source AI Accelerator Hardware.
+**Atik** is an open-source Tightly-Coupled Transformer Accelerator Hardware. Built on and for the RocketChip microarchitecture.
 
 *What makes it so special?* Here 👇
 
@@ -29,8 +29,54 @@ Standard vector units simply aren't cutting it anymore. With transformers being 
 
 To bring it all together: what the open-source hardware community truly needs right now is a dedicated Attention and MatMul accelerator. It needs to support BF16 natively, sit on top of a robust computer architecture like RocketChip, be easily benchmarked against modern PyTorch workloads, and be fully ready for FPGA prototyping.
 
-This is the gap **Atik** is trying to fill. A modern opensource Tightly-Coupled AI accelerator. FPGA-prototypable. VLSI-verified. Preparing for someone to tape it out! 
+This is the gap **Atik** is trying to fill. A modern opensource Tightly-Coupled AI accelerator. FPGA-prototypable. VLSI-verified. Preparing for someone to tape it out!  
+
 ![image](docs/static/layout-close-v2.png)
+
+## Try It Now!
+
+Start from the official Chipyard setup flow: clone Chipyard, run its setup script, and source `env.sh` before using the simulator makefiles. The current Chipyard docs describe this under [Initial Repository Setup](https://chipyard.readthedocs.io/en/latest/Chipyard-Basics/Initial-Repo-Setup.html), and the Verilator flow under [Software RTL Simulation](https://chipyard.readthedocs.io/en/stable/Simulation/Software-RTL-Simulation.html).
+
+```bash
+git clone https://github.com/ucb-bar/chipyard.git
+cd chipyard
+git checkout main
+./build-setup.sh riscv-tools
+source ./env.sh
+```
+
+Then put Atik under Chipyard's `generators/` directory and replace Chipyard's top-level `build.sbt` with the Atik-aware version from this repository. That patched build file adds the `atik` generator project and makes the `Atik2x2RoCCConfig`, `Atik4x4RoCCConfig`, and `Atik8x8RoCCConfig` configs visible to Chipyard.
+
+```bash
+cd generators
+git clone https://github.com/AhmedZeer/atik.git atik
+cd ..
+cp generators/atik/cy_build.sbt build.sbt
+```
+
+Build a Verilator simulator from Chipyard's `sims/verilator` directory. The smallest full configuration is the 2x2 RoCC design:
+
+```bash
+cd sims/verilator
+make CONFIG=Atik2x2RoCCConfig
+```
+
+Build the Atik bare-metal software binaries from this repository's `software/` directory:
+
+```bash
+cd ../../generators/atik/software
+make
+```
+
+Finally, run the provided smoke test on the generated Verilator simulator:
+
+```bash
+cd ../../../sims/verilator
+make CONFIG=Atik2x2RoCCConfig run-binary \
+  BINARY=../../generators/atik/software/build/atik_smoke.riscv \
+  LOADMEM=1
+```
+
 
 ## How Speedup Is Calculated
 
@@ -67,6 +113,7 @@ The deeper design notes are kept in [`manifest/architecture.md`](manifest/archit
 Atik is integrated with FireSim for cycle-accurate FPGA simulation on AWS F2. The FireSim configuration files under [`firesim/`](firesim/) describe the build recipes, hardware database entries, and deployment setup for the 2x2, 4x4, and 8x8 RoCC configurations.
 
 Prebuilt AGFI entries are listed in [`firesim/config_hwdb.yaml`](firesim/config_hwdb.yaml). Fresh images can be rebuilt from the recipes in [`firesim/config_build_recipes.yaml`](firesim/config_build_recipes.yaml) and selected through [`firesim/config_build.yaml`](firesim/config_build.yaml). In practice, this means the same Chisel design can be taken from source to a FireSim image and benchmarked with the software workloads in this repository.
+
 
 ## Benchmark Results
 ![image](docs/figs/aggregate-speedup.png)
