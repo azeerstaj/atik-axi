@@ -69,6 +69,55 @@ Atik is integrated with FireSim for cycle-accurate FPGA simulation on AWS F2. Th
 Prebuilt AGFI entries are listed in [`firesim/config_hwdb.yaml`](firesim/config_hwdb.yaml). Fresh images can be rebuilt from the recipes in [`firesim/config_build_recipes.yaml`](firesim/config_build_recipes.yaml) and selected through [`firesim/config_build.yaml`](firesim/config_build.yaml). In practice, this means the same Chisel design can be taken from source to a FireSim image and benchmarked with the software workloads in this repository.
 
 ## Benchmark Results
+![image](docs/figs/aggregate-speedup.png)
+![image](docs/figs/peek-speedup.png)
+
+These plots summarize the same benchmark suite across the 2x2, 4x4, and 8x8 Atik configurations. The workloads are intentionally different: matmul stresses dense BF16 matrix multiplication, attention stresses the QK, softmax, and PV path, while ViT, TinyBERT, and GPT-2 prefill exercise PyTorch-derived transformer layers with different sequence lengths, embedding widths, and head counts. Problem size has a direct effect on the speedup ratio, since larger cases usually amortize descriptor handling, DMA setup, and controller overhead more effectively. The benchmark set therefore includes a range of small and large cases, especially in the PyTorch-derived workloads, so the results show both overhead-dominated and compute-dominated behavior.
+
+The aggregate plot sums all RocketCore cycles and all Atik cycles for the matching problem sizes in each workload, then reports `sum(cpu_cycles) / sum(hw_cycles)`. This is the more conservative view because every included case contributes to the final number. In this view, the 8x8 design reaches about 31x on matmul, 182x on attention, 44x on ViT, 36x on TinyBERT, and 32x on GPT-2 prefill.
+
+The peak plot shows the best single observed case for each workload and hardware size. This highlights where the accelerator is most effectively amortizing control, DMA, and setup overheads over larger compute tiles. Peak speedup reaches 225.8x on attention with the 8x8 design, 96.0x on TinyBERT, 50.5x on ViT, 36.3x on GPT-2 prefill, and 31.5x on standalone matmul.
+
+### PyTorch Workloads
+The PyTorch-style workloads are ported into small C reference models that preserve the same kernel structure used by the corresponding model stage. The benchmark compares three paths: the original ground-truth output, the C reference output, and the Atik output. Reporting both CPU and hardware error makes sure the C workload itself matches the intended model behavior before judging the accelerator result.
+
+Multi-head attention is handled by decomposing the model into per-head QK, softmax, and PV operations. Atik accelerates those repeated attention kernels while the software harness keeps the surrounding model bookkeeping, tensor layout, and workload-level accounting consistent across configurations.
+
+#### TinyBERT
+![TinyBERT speedup](docs/figs/tinybert-speedup.png)
+TinyBERT keeps the transformer structure but uses a smaller configuration than full BERT: fewer layers, smaller hidden dimensions, fewer heads, and a compact classifier head. In these benchmarks, sequence length, model width, head count, hidden size, and class count are the main parameters being varied.
+
+In the figure labels, `S` is sequence length, `D` is model dimension, `H` is the number of attention heads, and `C` is the number of output classes. Increasing `S` grows the attention matrices, increasing `D` grows the projection and matmul work, increasing `H` adds more per-head attention instances, and increasing `C` expands the final classifier projection.
+
+The TinyBERT results show the expected size sensitivity. Small cases are more affected by fixed launch, DMA, and control overhead, while larger cases give the 4x4 and 8x8 designs more useful work per descriptor. The 8x8 configuration scales best on the larger TinyBERT cases and reaches the highest observed TinyBERT peak.
+
+#### Vision Transformer
+![ViT speedup](docs/figs/vit-speedup.png)
+The ViT workloads vary image-derived sequence length, patch dimension, model width, head count, MLP hidden size, and class count. This makes ViT a useful benchmark for checking how the accelerator behaves when attention and projection sizes grow together.
+
+For ViT, `S` is the token sequence length after patching, `D` is the model dimension, `H` is the number of attention heads, and `C` is the number of output classes. Larger `S` increases the QK and attention score sizes, larger `D` increases projection and value accumulation work, larger `H` increases the number of attention heads to schedule, and larger `C` increases the final classification layer.
+
+As with TinyBERT, larger ViT cases give the wider configurations more opportunity to amortize overhead. The 8x8 design consistently benefits from the larger problem sizes, while the smaller designs still improve over RocketCore but saturate earlier.
+
+#### GPT-2 Prefill Stage
+![GPT-2 prefill speedup](docs/figs/gpt2-speedup.png)
+GPT-2 prefill stresses the transformer path before autoregressive token-by-token decoding. The benchmark varies sequence length, model width, head count, hidden size, and vocabulary projection size, so it captures the cost of filling the initial context window.
+
+In the GPT-2 prefill labels, `S` is sequence length, `D` is model dimension, `H` is the number of attention heads, and `V` is vocabulary size for the output projection. Increasing `S` grows the context window and attention work, increasing `D` grows the transformer projections, increasing `H` adds more per-head attention work, and increasing `V` expands the logits projection.
+
+The same scaling pattern appears here: larger sequence and model sizes improve accelerator utilization, and the 8x8 configuration produces the strongest speedups. The gap between configurations is clearest on the larger prefill cases, where the wider mesh has enough work to stay busy.
+
+
+### C Workloads
+![Attention speedup](docs/figs/attention-speedup.png)
+![Matmul speedup](docs/figs/matmul-speedup.png)
+The standalone C workloads isolate the kernels more directly than the PyTorch-derived tests. Both matmul and attention show clear scaling from 2x2 to 4x4 to 8x8, especially as the problem size becomes large enough to hide fixed overheads.
+
+For attention, `Q` is the number of query tokens, `KV` is the number of key/value tokens, `D` is the key/query head dimension, and `V` is the value dimension. The QK score computation scales with `Q * KV * D`, while the PV accumulation scales with `Q * KV * V`, so increasing any of these dimensions raises the amount of accelerator work.
+
+The scaling is not unbounded. Once the mesh is well utilized, performance starts to plateau because DMA traffic, local buffering, controller scheduling, and scalar softmax work become more visible. Causal attention is also harder to accelerate than non-causal attention because masking removes useful work from part of the score matrix while the control flow still has to preserve the causal dependency structure.
+
+For matmul, `M`, `N`, and `K` describe the multiplication `C[M, N] = A[M, K] * B[K, N]`. Increasing `M` or `N` grows the output tile count, while increasing `K` grows the reduction work per output element. The total arithmetic work scales as `M * N * K`.
 
 ## Benchmark Videos
 
@@ -97,8 +146,6 @@ The area scales with mesh size, but the area per MAC lane improves as the fixed 
 | `TileDmaWriter` | 5,700.5 | 9,265.1 | 17,186.5 |
 
 The largest blocks are the attention and matmul controllers, followed by the shared scalar multiply path and tile DMA reader. Some blocks, such as `AttentionScalarMul` and `TileDmaReader`, stay nearly constant across mesh sizes because they are shared infrastructure rather than per-lane compute.
-
-## Tutorial Videos
 
 ## Project Timeline
 
