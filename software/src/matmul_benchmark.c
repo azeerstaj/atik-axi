@@ -9,9 +9,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define MAX_M 16
-#define MAX_N 16
-#define MAX_K 16
+#define MAX_M 128
+#define MAX_N 128
+#define MAX_K 128
 #define SAMPLE_COUNT 10
 
 static uint16_t mat_A[MAX_M * MAX_K] __attribute__((aligned(64)));
@@ -20,6 +20,19 @@ static uint16_t mat_C_sw[MAX_M * MAX_N] __attribute__((aligned(64)));
 static uint16_t mat_C_hw[MAX_M * MAX_N] __attribute__((aligned(64)));
 
 static const atik_matmul_case_t cases[] = {
+    {
+        .name = "matmul_m128_n128_k128_rng",
+        .m = 128,
+        .n = 128,
+        .k = 128,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 1,
+        .min_value = -2.0f,
+        .max_value = 2.0f,
+        .tolerance_x10000 = 800,
+    },
     {
         .name = "matmul_m2_n2_k2_rng",
         .m = 2,
@@ -72,6 +85,58 @@ static const atik_matmul_case_t cases[] = {
         .max_value = 1.5f,
         .tolerance_x10000 = 1800,
     },
+    {
+        .name = "matmul_m32_n32_k32_rng",
+        .m = 32,
+        .n = 32,
+        .k = 32,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 3,
+        .min_value = -0.5f,
+        .max_value = 0.5f,
+        .tolerance_x10000 = 5000,
+    },
+    {
+        .name = "matmul_m16_n16_k64_rng",
+        .m = 16,
+        .n = 16,
+        .k = 64,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 3,
+        .min_value = -0.5f,
+        .max_value = 1.0f,
+        .tolerance_x10000 = 8000,
+    },
+    {
+        .name = "matmul_m64_n16_k64_rng",
+        .m = 64,
+        .n = 16,
+        .k = 64,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 3,
+        .min_value = -1.0f,
+        .max_value = 0.5f,
+        .tolerance_x10000 = 8000,
+    },
+    {
+        .name = "matmul_m64_n64_k64_rng",
+        .m = 64,
+        .n = 64,
+        .k = 64,
+        .lda = MAX_K,
+        .ldb = MAX_N,
+        .ldc = MAX_N,
+        .seed = 3,
+        .min_value = -1.0f,
+        .max_value = 0.5f,
+        .tolerance_x10000 = 8000,
+    }
 };
 
 static void make_shape(char *shape, int size, const atik_matmul_case_t *test_case) {

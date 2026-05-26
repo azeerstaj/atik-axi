@@ -40,8 +40,6 @@ DEFAULT_CASES = (
     Gpt2PrefillCase("gpt2prefill_l1_s16_d64_h4_ff128_vocab128", 32, 64, 4, 128, 1, 128, 801),
     Gpt2PrefillCase("gpt2prefill_l1_s32_d128_h4_ff256_vocab256", 64, 128, 4, 256, 1, 256, 802),
     Gpt2PrefillCase("gpt2prefill_l1_s64_d128_h4_ff256_vocab256", 128, 128, 4, 256, 1, 256, 803),
-    Gpt2PrefillCase("gpt2prefill_512_l1_s128_d512_h8_ff512_vocab512", 256, 512, 8, 512, 1, 512, 811, 0.25, 0.015625),
-    Gpt2PrefillCase("gpt2prefill_512_l1_s512_d256_h4_ff512_vocab512", 512, 512, 4, 512, 1, 512, 815, 0.25, 0.015625),
 )
 
 

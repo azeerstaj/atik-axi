@@ -1,0 +1,57 @@
+[Case 0] gpt2prefill_l1_s16_d64_h4_ff128_vocab128
+  shape : seq=16 d_model=64 heads=4 head_dim=16 hidden=128 layers=1 vocab=128
+  mode  : attention+matmul
+  status: PASS  hw_rc=0 raw_hw_rc=0 mismatches=0
+  cycles: cpu=16019252 hw=2140420 speedup=7.48x
+         embedding=57851 ln=312935 qkv=400432 attn=131336 out=133502 fc1=267104 gelu=337911 fc2=226298 lm_head=192281 bias=80770 cpu_replaced=15229785 hw_replacement=1350953 atik_total=1089525
+  error : hw_max_abs=0.00782 cpu_ref_max_abs=0.00196
+
+  sample logits[start=0 count=10 total=2048]
+    sw : 0.1719 0.1006 0.2734 0.1973 -0.0447 -0.1465 0.1367 0.1885 0.0276 0.2080
+    hw : 0.1709 0.1011 0.2734 0.1963 -0.0449 -0.1465 0.1357 0.1885 0.0277 0.2080
+    diff: 0.0010 0.0005 0.0000 0.0010 0.0002 0.0000 0.0010 0.0000 0.0001 0.0000
+SAMPLE_JSON {"workload":"gpt2-prefill","case":0,"name":"gpt2prefill_l1_s16_d64_h4_ff128_vocab128","tensor":"logits","start":0,"count":10,"total":2048,"hw_rc":0,"sw":[0.1719,0.1006,0.2734,0.1973,-0.0447,-0.1465,0.1367,0.1885,0.0276,0.2080],"hw":[0.1709,0.1011,0.2734,0.1963,-0.0449,-0.1465,0.1357,0.1885,0.0277,0.2080],"diff":[0.0010,0.0005,0.0000,0.0010,0.0002,0.0000,0.0010,0.0000,0.0001,0.0000]}
+RESULT_JSON {"workload":"gpt2-prefill","case":0,"name":"gpt2prefill_l1_s16_d64_h4_ff128_vocab128","status":"PASS","hw_rc":0,"raw_hw_rc":0,"mismatches":0,"cpu_cycles":16019252,"hw_cycles":2140420,"speedup_x100":748,"hw_max_abs_diff_x100000":782,"cpu_ref_max_abs_diff_x100000":196}
+[Case 1] gpt2prefill_l1_s16_d64_h4_ff128_vocab128
+  shape : seq=32 d_model=64 heads=4 head_dim=16 hidden=128 layers=1 vocab=128
+  mode  : attention+matmul
+  status: PASS  hw_rc=0 raw_hw_rc=0 mismatches=0
+  cycles: cpu=40120658 hw=4521365 speedup=8.87x
+         embedding=113094 ln=625138 qkv=798281 attn=510059 out=265373 fc1=532368 gelu=678072 fc2=452207 lm_head=383745 bias=163028 cpu_replaced=38541326 hw_replacement=2942033 atik_total=2422565
+  error : hw_max_abs=0.00977 cpu_ref_max_abs=0.00196
+
+  sample logits[start=0 count=10 total=4096]
+    sw : 0.0869 0.0452 -0.0947 -0.0630 0.1855 0.1328 -0.1226 -0.0439 0.1309 0.0562
+    hw : 0.0869 0.0452 -0.0947 -0.0630 0.1855 0.1328 -0.1221 -0.0435 0.1309 0.0559
+    diff: 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0005 0.0004 0.0000 0.0003
+SAMPLE_JSON {"workload":"gpt2-prefill","case":1,"name":"gpt2prefill_l1_s16_d64_h4_ff128_vocab128","tensor":"logits","start":0,"count":10,"total":4096,"hw_rc":0,"sw":[0.0869,0.0452,-0.0947,-0.0630,0.1855,0.1328,-0.1226,-0.0439,0.1309,0.0562],"hw":[0.0869,0.0452,-0.0947,-0.0630,0.1855,0.1328,-0.1221,-0.0435,0.1309,0.0559],"diff":[0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0005,0.0004,0.0000,0.0003]}
+RESULT_JSON {"workload":"gpt2-prefill","case":1,"name":"gpt2prefill_l1_s16_d64_h4_ff128_vocab128","status":"PASS","hw_rc":0,"raw_hw_rc":0,"mismatches":0,"cpu_cycles":40120658,"hw_cycles":4521365,"speedup_x100":887,"hw_max_abs_diff_x100000":977,"cpu_ref_max_abs_diff_x100000":196}
+[Case 2] gpt2prefill_l1_s32_d128_h4_ff256_vocab256
+  shape : seq=64 d_model=128 heads=4 head_dim=32 hidden=256 layers=1 vocab=256
+  mode  : attention+matmul
+  status: PASS  hw_rc=0 raw_hw_rc=0 mismatches=0
+  cycles: cpu=421872551 hw=29975799 speedup=14.07x
+         embedding=454203 ln=2447391 qkv=5417015 attn=6546852 out=1806303 fc1=3615778 gelu=2718213 fc2=3292467 lm_head=3019653 bias=657924 cpu_replaced=415594820 hw_replacement=23698068 atik_total=21626030
+  error : hw_max_abs=0.01563 cpu_ref_max_abs=0.00391
+
+  sample logits[start=0 count=10 total=16384]
+    sw : 0.0708 -0.0173 -0.1406 0.1914 0.3438 -0.2422 0.1426 0.1934 -0.2559 0.2344
+    hw : 0.0703 -0.0184 -0.1396 0.1924 0.3438 -0.2422 0.1426 0.1934 -0.2559 0.2344
+    diff: 0.0005 0.0011 0.0010 0.0010 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000
+SAMPLE_JSON {"workload":"gpt2-prefill","case":2,"name":"gpt2prefill_l1_s32_d128_h4_ff256_vocab256","tensor":"logits","start":0,"count":10,"total":16384,"hw_rc":0,"sw":[0.0708,-0.0173,-0.1406,0.1914,0.3438,-0.2422,0.1426,0.1934,-0.2559,0.2344],"hw":[0.0703,-0.0184,-0.1396,0.1924,0.3438,-0.2422,0.1426,0.1934,-0.2559,0.2344],"diff":[0.0005,0.0011,0.0010,0.0010,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000]}
+RESULT_JSON {"workload":"gpt2-prefill","case":2,"name":"gpt2prefill_l1_s32_d128_h4_ff256_vocab256","status":"PASS","hw_rc":0,"raw_hw_rc":0,"mismatches":0,"cpu_cycles":421872551,"hw_cycles":29975799,"speedup_x100":1407,"hw_max_abs_diff_x100000":1563,"cpu_ref_max_abs_diff_x100000":391}
+[Case 3] gpt2prefill_l1_s64_d128_h4_ff256_vocab256
+  shape : seq=128 d_model=128 heads=4 head_dim=32 hidden=256 layers=1 vocab=256
+  mode  : attention+matmul
+  status: PASS  hw_rc=0 raw_hw_rc=0 mismatches=0
+  cycles: cpu=1202180333 hw=73166596 speedup=16.43x
+         embedding=907232 ln=4927143 qkv=10861247 attn=26148295 out=3628561 fc1=7248051 gelu=5434793 fc2=6600100 lm_head=6056197 bias=1354977 cpu_replaced=1189556188 hw_replacement=60542451 atik_total=56389203
+  error : hw_max_abs=0.01563 cpu_ref_max_abs=0.00391
+
+  sample logits[start=0 count=10 total=32768]
+    sw : -0.1592 -0.0811 0.1250 0.2090 0.1504 -0.0581 0.0125 -0.0635 0.1348 0.2256
+    hw : -0.1602 -0.0815 0.1250 0.2090 0.1504 -0.0581 0.0125 -0.0630 0.1348 0.2256
+    diff: 0.0010 0.0004 0.0000 0.0000 0.0000 0.0000 0.0000 0.0005 0.0000 0.0000
+SAMPLE_JSON {"workload":"gpt2-prefill","case":3,"name":"gpt2prefill_l1_s64_d128_h4_ff256_vocab256","tensor":"logits","start":0,"count":10,"total":32768,"hw_rc":0,"sw":[-0.1592,-0.0811,0.1250,0.2090,0.1504,-0.0581,0.0125,-0.0635,0.1348,0.2256],"hw":[-0.1602,-0.0815,0.1250,0.2090,0.1504,-0.0581,0.0125,-0.0630,0.1348,0.2256],"diff":[0.0010,0.0004,0.0000,0.0000,0.0000,0.0000,0.0000,0.0005,0.0000,0.0000]}
+RESULT_JSON {"workload":"gpt2-prefill","case":3,"name":"gpt2prefill_l1_s64_d128_h4_ff256_vocab256","status":"PASS","hw_rc":0,"raw_hw_rc":0,"mismatches":0,"cpu_cycles":1202180333,"hw_cycles":73166596,"speedup_x100":1643,"hw_max_abs_diff_x100000":1563,"cpu_ref_max_abs_diff_x100000":391}
+
