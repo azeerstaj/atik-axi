@@ -9,8 +9,9 @@
 ✅ Benchmarked against **PyTorch**-based workloads  
 ✅ Built on the **RocketChip** architecture (RISC-V)  
 ✅ Native **BF16** support  
-✅ Up to **100×** speedup on vanilla attention  
-✅ Up to **80×** speedup on TinyBERT  
+✅ Up to **225×** speedup on vanilla attention mechanism
+✅ Up to **96×** speedup on TinyBERT  
+✅ Up to **50×** speedup on ViT  
 ✅ Up to **30×** speedup on GPT-2 prefill  
 
 - Don't believe benchmark results? Click to watch the [playlist](https://www.youtube.com/playlist?list=PL6v0daaIvQGvxYVnezbRdfBysHe-s8BjE).
