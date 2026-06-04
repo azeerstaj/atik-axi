@@ -36,30 +36,43 @@ This is the gap **Atik** is trying to fill. A modern opensource Tightly-Coupled 
 
 ## Try It Now!
 
-Start from the official Chipyard setup flow: clone Chipyard, run its setup script, and source `env.sh` before using the simulator makefiles. The current Chipyard docs describe this under [Initial Repository Setup](https://chipyard.readthedocs.io/en/latest/Chipyard-Basics/Initial-Repo-Setup.html), and the Verilator flow under [Software RTL Simulation](https://chipyard.readthedocs.io/en/stable/Simulation/Software-RTL-Simulation.html).
+Clone the Atik-ready Chipyard F2 repository instead of starting from upstream Chipyard. This repository already carries `generators/atik` and the top-level `build.sbt` wiring that compiles Atik's Chipyard-facing configs into `chipyard.jar`.
 
 ```bash
-git clone https://github.com/ucb-bar/chipyard.git
-cd chipyard
-git checkout main
+git clone https://github.com/AhmedZeer/chipyard-f2.git
+cd chipyard-f2
 ./build-setup.sh riscv-tools
 source ./env.sh
 ```
 
-Then put Atik under Chipyard's `generators/` directory and replace Chipyard's top-level `build.sbt` with the Atik-aware version from this repository. That patched build file adds the `atik` generator project and makes the `Atik2x2RoCCConfig`, `Atik4x4RoCCConfig`, and `Atik8x8RoCCConfig` configs visible to Chipyard.
+Use the repository-local conda tools before running SBT or simulator make targets. This keeps SBT on the same Java used by the tested flow and puts `dtc` on `PATH`.
 
 ```bash
-cd generators
-git clone https://github.com/AhmedZeer/atik.git atik
-cd ..
-cp generators/atik/cy_build.sbt build.sbt
+export JAVA_HOME="$PWD/.conda-env/lib/jvm"
+export PATH="$PWD/.conda-env/bin:$JAVA_HOME/bin:$PATH"
+java -version
+command -v dtc
 ```
 
-Build a Verilator simulator from Chipyard's `sims/verilator` directory. The smallest full configuration is the 2x2 RoCC design:
+The expected Java version is the repo-local OpenJDK 20 from `.conda-env/lib/jvm`. If system Java 21 is picked up instead, SBT can fail while loading the build with a Scala parser error such as `bad constant pool index`.
+
+Build a Verilator simulator from `sims/verilator`. The smallest full configuration is the 2x2 RoCC design:
 
 ```bash
 cd sims/verilator
 make CONFIG=Atik2x2RoCCConfig
+```
+
+If you are debugging config discovery, the generated classpath jar should contain the Atik config classes after the first build:
+
+```bash
+jar tf ../../.classpath_cache/chipyard.jar | grep "chipyard/Atik2x2RoCCConfig.class"
+```
+
+Expected output:
+
+```text
+chipyard/Atik2x2RoCCConfig.class
 ```
 
 Build the Atik bare-metal software binaries from this repository's `software/` directory:
