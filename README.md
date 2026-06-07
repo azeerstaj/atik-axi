@@ -14,11 +14,14 @@
 ✅ Up to **50×** speedup on ViT  
 ✅ Up to **30×** speedup on GPT-2 prefill  
 
+- Watch these [videos](https://www.youtube.com/playlist?list=PL6v0daaIvQGsj1eRnxf7YfX6KYgopo65X) to understand the architecture throguhly.
 - Don't believe benchmark results? Click to watch the [playlist](https://www.youtube.com/playlist?list=PL6v0daaIvQGvxYVnezbRdfBysHe-s8BjE).
 - Want to simulate it locally? [Jump to here](#try-it-now)
 
 *From here upon nerdy people can continue reading :)*
 
+![image](docs/figs/atik-archi.png)
+---
 ![image](docs/static/compare-chips.png)
 
 ## Why Atik ?
@@ -116,11 +119,16 @@ This keeps the comparison cycle-based while avoiding repeated full-model replays
 
 ## Architecture
 
+![Atik Full Architecture](docs/figs/atik-full.png)
+
 Atik is a RoCC-attached accelerator. Software describes an operation with an `atik_desc_t`, sends the descriptor address with `set_desc`, and starts execution with `run`. Hardware fetches that descriptor, decodes whether the operation is matmul, attention, or causal attention, and dispatches to the matching controller.
 
 Both matmul and attention use explicit DMA, local SRAM-backed tile buffers, BF16-to-fixed conversion, a shared fixed-point MAC mesh, and BF16 writeback. Matmul uses the mesh for `C += A * B`; attention reuses the same mesh for both QK score computation and probability-times-V accumulation, with scalar-scheduled softmax, reciprocal, and normalization around it.
 
 The deeper design notes are kept in [`manifest/architecture.md`](manifest/architecture.md). The end-to-end operation flows are documented in [`manifest/scenarios/matmul.md`](manifest/scenarios/matmul.md) and [`manifest/scenarios/attention.md`](manifest/scenarios/attention.md).
+
+![Atik Architecture Playlist](docs/figs/architecture-playlist.png) 
+If you are intereseted in a deep dive on the architecture you can watch these [videos](https://www.youtube.com/playlist?list=PL6v0daaIvQGsj1eRnxf7YfX6KYgopo65X).
 
 ## Time & Cycle Accurate Simulation On FPGA
 
@@ -181,6 +189,8 @@ The scaling is not unbounded. Once the mesh is well utilized, performance starts
 For matmul, `M`, `N`, and `K` describe the multiplication `C[M, N] = A[M, K] * B[K, N]`. Increasing `M` or `N` grows the output tile count, while increasing `K` grows the reduction work per output element. The total arithmetic work scales as `M * N * K`.
 
 ## Benchmark Videos
+![image](docs/figs/benchmark-playlist.png)
+Checkout this [playlist](https://www.youtube.com/playlist?list=PL6v0daaIvQGvxYVnezbRdfBysHe-s8BjE) to watch all the benchmarking videos that have been done on AWS F2 FPGA.
 
 ## VLSI Flow
 ![image](docs/static/compare-masked.png)
