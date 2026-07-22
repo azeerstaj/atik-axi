@@ -1,0 +1,6 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1784730221" />
+    <testcase name="reset_and_register_map_smoke" classname="test_axi_smoke" file="/home/pc_5996/chipyard-f2/generators/atik/sim/cocotb/test_axi_smoke.py" lineno="25" time="0.009934425354003906" sim_time_ns="260.001" ratio_time="26171.720128251894" />
+  </testsuite>
+</testsuites>

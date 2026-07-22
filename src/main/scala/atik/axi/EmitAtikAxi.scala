@@ -6,7 +6,7 @@ import java.nio.file.{Files, Path, Paths}
 
 /** Emits standalone SystemVerilog suitable for importing into a Vivado IP project. */
 object EmitAtikAxi extends App {
-  private case class Options(mesh: Int = 2, output: Path = Paths.get("build", "atik-axi-2x2"))
+  case class Options(mesh: Int = 2, output: Path = Paths.get("build", "atik-axi-2x2"))
 
   private def usage(): Nothing = {
     Console.err.println("Usage: EmitAtikAxi [--mesh 2|4|8] [--output DIRECTORY]")

@@ -1,0 +1,4 @@
+cocotb==1.9.2
+cocotbext-axi==0.1.28
+numpy==2.2.6
+pytest==9.1.1

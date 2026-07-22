@@ -20,8 +20,10 @@ class AtikAxiDma(params: AtikParams, idBits: Int = 1) extends Module {
     val busy = Output(Bool())
   })
 
-  private val sIdle :: sReadAddress :: sReadData :: sReadCore ::
-    sWriteAddressData :: sWriteBusResponse :: sWriteCore :: Nil = Enum(7)
+  private val (
+    sIdle :: sReadAddress :: sReadData :: sReadCore ::
+      sWriteAddressData :: sWriteBusResponse :: sWriteCore :: Nil
+  ) = Enum(7)
   private val state = RegInit(sIdle)
 
   private val addressReg = Reg(UInt(params.addrBits.W))
